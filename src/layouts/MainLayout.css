@@ -1,0 +1,23 @@
+.layout {
+    display: flex;
+    min-height: 100vh;
+    background: #f5f6fa;
+}
+
+.main-content{
+    margin-left:260px;
+    width:calc(100% - 260px);
+    transition:.3s;
+}
+
+.main-content.expanded{
+    margin-left:80px;
+    width:calc(100% - 80px);
+}
+
+
+.page-content{
+    margin-top:70px;
+    padding:20px;
+    flex:1;
+}
