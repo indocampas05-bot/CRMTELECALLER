@@ -1,6 +1,6 @@
 import React from 'react';
 import './InvoiceTemplate.css';
-import { INVOICE_DEFAULTS } from './invoiceDefaults';
+import { INVOICE_DEFAULTS } from './InvoiceDefaults';
 
 const money = (value) =>
   Number(value || 0).toLocaleString('en-IN', {

@@ -2,7 +2,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import { FiDownload, FiPlus, FiSave, FiTrash2, FiX } from 'react-icons/fi';
 
 import InvoiceTemplate from './InvoiceTemplate';
-import { INVOICE_DEFAULTS, TEXT_KEYS } from './invoiceDefaults';
+import { INVOICE_DEFAULTS, TEXT_KEYS } from './InvoiceDefaults';
 import paymentAdminService from '../../services/paymentAdminService';
 import invoiceAssetService from '../../services/invoiceAssetService';
 
