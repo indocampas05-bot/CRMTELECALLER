@@ -4,7 +4,7 @@
 // handling). Mirrors the same request() pattern already used in
 // callService.js / telecallerService.js so behavior stays consistent
 // across the app.
-const API_BASE = import.meta.env.VITE_API_BASE || 'https://scanning-unused-dash.ngrok-free.dev/api';
+const API_BASE = import.meta.env.VITE_API_BASE || 'https://crmbackend-5d2o.onrender.com/api';
 const getToken = () => localStorage.getItem('token');
 export const request = async (endpoint, options = {}) => {
   const token = getToken();

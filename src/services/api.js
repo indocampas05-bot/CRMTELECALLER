@@ -2,7 +2,7 @@
 
 const API_BASE =
   import.meta.env.VITE_API_BASE ||
-  'https://scanning-unused-dash.ngrok-free.dev/api';
+  'https://crmbackend-5d2o.onrender.com/api';
 
 /**
  * Generic API request function with authentication

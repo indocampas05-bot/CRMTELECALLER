@@ -6450,7 +6450,7 @@ export const WebSocketProvider = ({ children }) => {
    *
    * Do NOT use:
    *
-   * https://scanning-unused-dash.ngrok-free.dev/ws
+   * https://crmbackend-5d2o.onrender.com/ws
    *
    * here.
    *
@@ -6460,7 +6460,7 @@ export const WebSocketProvider = ({ children }) => {
    *
    * and Vite proxies it to:
    *
-   * https://scanning-unused-dash.ngrok-free.dev/ws
+   * https://crmbackend-5d2o.onrender.com/ws
    *
    */
 
@@ -6745,7 +6745,7 @@ export const WebSocketProvider = ({ children }) => {
        *
        * to:
        *
-       * https://scanning-unused-dash.ngrok-free.dev/ws
+       * https://crmbackend-5d2o.onrender.com/ws
        */
       webSocketFactory: () => {
         console.log(
@@ -22942,7 +22942,7 @@ export default Users;
 
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\services\agreementService.js =====
 // src/services/agreementService.js
-const API_BASE = import.meta.env.VITE_API_BASE || 'https://scanning-unused-dash.ngrok-free.dev/api';
+const API_BASE = import.meta.env.VITE_API_BASE || 'https://crmbackend-5d2o.onrender.com/api';
 const REQUEST_TIMEOUT = 30000;
 
 const auth = (json = true) => {
@@ -23062,7 +23062,7 @@ export default agreementService;
 
 const API_BASE =
   import.meta.env.VITE_API_BASE ||
-  'https://scanning-unused-dash.ngrok-free.dev/api';
+  'https://crmbackend-5d2o.onrender.com/api';
 
 /**
  * Generic API request function with authentication
@@ -23657,7 +23657,7 @@ export default api;
 // handling). Mirrors the same request() pattern already used in
 // callService.js / telecallerService.js so behavior stays consistent
 // across the app.
-const API_BASE = import.meta.env.VITE_API_BASE || 'https://scanning-unused-dash.ngrok-free.dev/api';
+const API_BASE = import.meta.env.VITE_API_BASE || 'https://crmbackend-5d2o.onrender.com/api';
 const getToken = () => localStorage.getItem('token');
 export const request = async (endpoint, options = {}) => {
   const token = getToken();
@@ -23689,7 +23689,7 @@ export const request = async (endpoint, options = {}) => {
 export default request;
 
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\services\attendanceService.js =====
-const API_BASE = import.meta.env.VITE_API_BASE || 'https://scanning-unused-dash.ngrok-free.dev/api';
+const API_BASE = import.meta.env.VITE_API_BASE || 'https://crmbackend-5d2o.onrender.com/api';
 const request = async (endpoint, options={}) => {
   const token=localStorage.getItem('token');
   const headers={'Content-Type':'application/json','ngrok-skip-browser-warning':'true',...(options.headers||{})};
@@ -23711,7 +23711,7 @@ export default attendanceService;
 
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\services\authService.js =====
 // CRM-APP (TELECALLERS)/src/services/authService.js
-const API_BASE = import.meta.env.VITE_API_BASE || 'https://scanning-unused-dash.ngrok-free.dev/api';
+const API_BASE = import.meta.env.VITE_API_BASE || 'https://crmbackend-5d2o.onrender.com/api';
 const getToken = () => localStorage.getItem('token');
 
 const apiCall = async (endpoint, options = {}) => {
@@ -23763,7 +23763,7 @@ export const authService = {
 export default authService;
 
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\services\bridgeService.js =====
-const API_BASE = import.meta.env.VITE_API_BASE || 'https://scanning-unused-dash.ngrok-free.dev/api';
+const API_BASE = import.meta.env.VITE_API_BASE || 'https://crmbackend-5d2o.onrender.com/api';
 
 const getToken = () => localStorage.getItem('token');
 
@@ -23833,7 +23833,7 @@ export default calendarService;
 
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\services\callService.js =====
 // CRM-APP (TELECALLERS)/src/services/callService.js
-const API_BASE = import.meta.env.VITE_API_BASE || 'https://scanning-unused-dash.ngrok-free.dev/api';
+const API_BASE = import.meta.env.VITE_API_BASE || 'https://crmbackend-5d2o.onrender.com/api';
 const getToken = () => localStorage.getItem('token');
 const request = async (endpoint, options = {}) => {
   const token = getToken();
@@ -23899,7 +23899,7 @@ export default callService;
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\services\communicationService.js =====
 const API_BASE =
   import.meta.env.VITE_API_BASE ||
-  'https://scanning-unused-dash.ngrok-free.dev/api';
+  'https://crmbackend-5d2o.onrender.com/api';
 
 const BASE =
   `${API_BASE}/communications`;
@@ -24168,7 +24168,7 @@ export default communicationService;
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\services\dashboardService.js =====
 const API_BASE =
   import.meta.env.VITE_API_BASE ||
-  "https://scanning-unused-dash.ngrok-free.dev/api";
+  "https://crmbackend-5d2o.onrender.com/api";
 
 async function request(path) {
   const token = localStorage.getItem("token");
@@ -24234,7 +24234,7 @@ export default demoService;
 
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\services\exotelCallService.js =====
 // FILE: src/services/exotelCallService.js
-const API_BASE = import.meta.env.VITE_API_BASE || 'https://scanning-unused-dash.ngrok-free.dev/api';
+const API_BASE = import.meta.env.VITE_API_BASE || 'https://crmbackend-5d2o.onrender.com/api';
 
 function authHeaders(extra = {}) {
   const token = localStorage.getItem('token');
@@ -24264,7 +24264,7 @@ export const exotelCallService = {
 export default exotelCallService;
 
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\services\invoiceAssetService.js =====
-const API_BASE=import.meta.env.VITE_API_BASE||'https://scanning-unused-dash.ngrok-free.dev/api';
+const API_BASE=import.meta.env.VITE_API_BASE||'https://crmbackend-5d2o.onrender.com/api';
 const headers=()=>{const t=localStorage.getItem('token');return {'ngrok-skip-browser-warning':'true',...(t?{Authorization:`Bearer ${t}`}:{})}};
 const handle=async r=>{if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error(j.message||'Request failed')}return r};
 const upload=async(path,file)=>{const fd=new FormData();fd.append('file',file);const r=await fetch(`${API_BASE}${path}`,{method:'POST',headers:headers(),body:fd});return (await handle(r)).json()};
@@ -24276,7 +24276,7 @@ export default { uploadLogo:file=>upload('/payments/admin/invoice-assets/logo',f
 
 const API_BASE =
   import.meta.env.VITE_API_BASE ||
-  'https://scanning-unused-dash.ngrok-free.dev/api';
+  'https://crmbackend-5d2o.onrender.com/api';
 
 const getToken = () => localStorage.getItem('token');
 
@@ -24611,7 +24611,7 @@ export default leadService;
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\services\leavePermissionService.js =====
 const API_BASE =
   import.meta.env.VITE_API_BASE ||
-  'https://scanning-unused-dash.ngrok-free.dev/api';
+  'https://crmbackend-5d2o.onrender.com/api';
 const request = async (endpoint, options = {}) => {
   const token = localStorage.getItem('token');
   const headers = {
@@ -24696,7 +24696,7 @@ export default leavePermissionService;
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\services\localSimCallService.js =====
 const API_BASE = (
   import.meta.env.VITE_API_BASE ||
-  'https://scanning-unused-dash.ngrok-free.dev/api'
+  'https://crmbackend-5d2o.onrender.com/api'
 ).replace(/\/+$/, '');
 
 function getAuthToken() {
@@ -24929,7 +24929,7 @@ export default {
 
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\services\paymentService.js =====
 // src/services/paymentService.js
-const API_BASE = import.meta.env.VITE_API_BASE || 'https://scanning-unused-dash.ngrok-free.dev/api';
+const API_BASE = import.meta.env.VITE_API_BASE || 'https://crmbackend-5d2o.onrender.com/api';
 const getToken = () => localStorage.getItem('token');
 const authHeaders = (extra = {}) => {
   const token = getToken();
@@ -24996,7 +24996,7 @@ export default paymentService;
 
 
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\services\quotationService.js =====
-const API_BASE = import.meta.env.VITE_API_BASE || 'https://scanning-unused-dash.ngrok-free.dev/api';
+const API_BASE = import.meta.env.VITE_API_BASE || 'https://crmbackend-5d2o.onrender.com/api';
 const getToken = () => localStorage.getItem('token');
 const authHeaders = (extra = {}) => {
   const token = getToken();
@@ -25052,7 +25052,7 @@ export default quotationService;
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\services\reportService.js =====
 const API_BASE =
   import.meta.env.VITE_API_BASE ||
-  'https://scanning-unused-dash.ngrok-free.dev/api';
+  'https://crmbackend-5d2o.onrender.com/api';
 
 const request = async (path) => {
   const token = localStorage.getItem('token');
@@ -25093,7 +25093,7 @@ export const reportService = {
 
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\services\telecallerService.js =====
 // CRM-APP (TELECALLERS)/src/services/telecallerService.js
-const API_BASE = import.meta.env.VITE_API_BASE || 'https://scanning-unused-dash.ngrok-free.dev/api';
+const API_BASE = import.meta.env.VITE_API_BASE || 'https://crmbackend-5d2o.onrender.com/api';
 const getToken = () => localStorage.getItem('token');
 const request = async (endpoint, options = {}) => {
   const token = getToken();
@@ -25153,7 +25153,7 @@ export default telecallerService;
 
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\services\templateService.js =====
 // src/services/templateService.js
-const API_BASE = import.meta.env.VITE_API_BASE || 'https://scanning-unused-dash.ngrok-free.dev/api';
+const API_BASE = import.meta.env.VITE_API_BASE || 'https://crmbackend-5d2o.onrender.com/api';
 const getToken = () => localStorage.getItem('token');
 const authHeaders = (extra = {}) => {
   const token = getToken();

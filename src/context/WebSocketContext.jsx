@@ -53,7 +53,7 @@ export const WebSocketProvider = ({ children }) => {
    *
    * Do NOT use:
    *
-   * https://scanning-unused-dash.ngrok-free.dev/ws
+   * https://crmbackend-5d2o.onrender.com/ws
    *
    * here.
    *
@@ -63,7 +63,7 @@ export const WebSocketProvider = ({ children }) => {
    *
    * and Vite proxies it to:
    *
-   * https://scanning-unused-dash.ngrok-free.dev/ws
+   * https://crmbackend-5d2o.onrender.com/ws
    *
    */
 
@@ -348,7 +348,7 @@ export const WebSocketProvider = ({ children }) => {
        *
        * to:
        *
-       * https://scanning-unused-dash.ngrok-free.dev/ws
+       * https://crmbackend-5d2o.onrender.com/ws
        */
       webSocketFactory: () => {
         console.log(
