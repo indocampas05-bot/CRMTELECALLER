@@ -115,7 +115,9 @@ const hasValidFollowupDate = (value) => {
 const computeIsFollowUp = (lead) => {
   const status = (lead.status || '').trim();
   if (status === 'Call Back' || status === 'Follow-up') return true;
-  if (!hasValidFollowupDate(lead.tcNextRefollowupDate)) return false;
+  // Follow-up date is optional now: a lead already marked "Interested" (without a date) stays in the
+  // Follow-ups tab instead of looking like an untouched New lead.
+  if (!hasValidFollowupDate(lead.tcNextRefollowupDate)) return status === 'Interested';
   const record = parseLeadUpdateRecord(lead);
   if (record.TC_NEXT_FOLLOWUP_NOTE && String(record.TC_NEXT_FOLLOWUP_NOTE).trim()) return true;
   return !NEW_STAGE_STATUSES.includes(status);
@@ -490,12 +492,12 @@ const OutcomeModal = ({ lead, onClose, onSave, loading }) => {
             </div>
           )}
           <div className="form-group">
-            <label>Next Follow-up Date & Time *</label>
-            <input type="datetime-local" value={followUpDate} onChange={e => setFollowUpDate(e.target.value)} disabled={loading} required style={{width:'100%',padding:'8px 12px',borderRadius:'8px',border:'1px solid #e5e7eb'}} />
+            <label>Next Follow-up Date & Time (optional)</label>
+            <input type="datetime-local" value={followUpDate} onChange={e => setFollowUpDate(e.target.value)} disabled={loading} style={{width:'100%',padding:'8px 12px',borderRadius:'8px',border:'1px solid #e5e7eb'}} />
           </div>
           <div className="form-group">
-            <label>Follow-up Note *</label>
-            <textarea rows={2} value={followUpNote} onChange={e => setFollowUpNote(e.target.value)} disabled={loading} required placeholder="What should the telecaller follow up about?" /> 
+            <label>Follow-up Note (optional)</label>
+            <textarea rows={2} value={followUpNote} onChange={e => setFollowUpNote(e.target.value)} disabled={loading} placeholder="What should the telecaller follow up about?" /> 
           </div>
           <div className="form-group">
             <label>Remarks</label>
@@ -635,7 +637,13 @@ const CallPanel = ({ onNavigate, isMobile = false, navigationState = null }) => 
   const [isListening, setIsListening] = useState(false);
   const [interimTranscript, setInterimTranscript] = useState('');
   const recognitionRef = useRef(null);
-  const [autoNext, setAutoNext] = useState(true);
+  const [autoNext, setAutoNext] = useState(() => {
+    try { return localStorage.getItem('callpanel-auto-next') !== 'off'; } catch { return true; }
+  });
+  const toggleAutoNext = (on) => {
+    setAutoNext(on);
+    try { localStorage.setItem('callpanel-auto-next', on ? 'on' : 'off'); } catch { /* ignore */ }
+  };
   const [agentStatus, setAgentStatus] = useState('Available');
   const [queueSearch, setQueueSearch] = useState('');
   const [queueSegment, setQueueSegment] = useState('New Leads');
@@ -819,14 +827,13 @@ const CallPanel = ({ onNavigate, isMobile = false, navigationState = null }) => 
       selectedCategories
     } = data;
 
-    if (!selectedFollowUpDate || !selectedFollowUpNote?.trim()) {
-      showToast('Please enter the next follow-up date, time and note for this status.', 'error');
-      return;
-    }
-    const followupAt = new Date(selectedFollowUpDate);
-    if (Number.isNaN(followupAt.getTime()) || followupAt.getTime() <= Date.now()) {
-      showToast('Please select a valid future follow-up date and time.', 'error');
-      return;
+    // Follow-up is optional; if a date is given it must be valid and in the future.
+    if (selectedFollowUpDate) {
+      const followupAt = new Date(selectedFollowUpDate);
+      if (Number.isNaN(followupAt.getTime()) || followupAt.getTime() <= Date.now()) {
+        showToast('Please select a valid future follow-up date and time.', 'error');
+        return;
+      }
     }
 
     const businessLeadId = getBusinessLeadId(activeLead);
@@ -838,12 +845,13 @@ const CallPanel = ({ onNavigate, isMobile = false, navigationState = null }) => 
     setSavingOutcome(true);
     try {
       const existingRecord = parseLeadUpdateRecord(activeLead);
-      const nextRecord = { ...existingRecord, TC_NEXT_FOLLOWUP_NOTE: selectedFollowUpNote.trim() };
+      const nextRecord = { ...existingRecord };
+      if (selectedFollowUpNote?.trim()) nextRecord.TC_NEXT_FOLLOWUP_NOTE = selectedFollowUpNote.trim();
       const leadPayload = {
         status: selectedOutcome,
-        tcNextRefollowupDate: selectedFollowUpDate,
         notes: JSON.stringify(nextRecord),
       };
+      if (selectedFollowUpDate) leadPayload.tcNextRefollowupDate = selectedFollowUpDate;
 
       const durationSeconds = Math.max(0, Number(lastCallDuration || elapsed || 0));
       const endedAt = new Date();
@@ -873,7 +881,7 @@ const CallPanel = ({ onNavigate, isMobile = false, navigationState = null }) => 
       const updatedLead = {
         ...activeLead,
         status: selectedOutcome,
-        tcNextRefollowupDate: selectedFollowUpDate,
+        ...(selectedFollowUpDate ? { tcNextRefollowupDate: selectedFollowUpDate } : {}),
         notes: leadPayload.notes,
       };
       setActiveLead(updatedLead);
@@ -903,6 +911,19 @@ const CallPanel = ({ onNavigate, isMobile = false, navigationState = null }) => 
   const segmentPickedRef = useRef(false);
   useEffect(() => { activeLeadRef.current = activeLead; }, [activeLead]);
 
+  // keep the selected lead visible in the queue (e.g. after auto-advancing to the next lead)
+  useEffect(() => {
+    document.querySelector('.ref-lead-row.selected')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [activeLead?.id]);
+
+  // remember the lead being worked on, so the panel can reopen it after the telecaller visits another page
+  useEffect(() => {
+    if (!activeLead) return;
+    const id = getBusinessLeadId(activeLead) || activeLead.id;
+    if (!id) return;
+    try { sessionStorage.setItem('callpanel-last-lead', String(id)); } catch { /* ignore */ }
+  }, [activeLead]);
+
   const applyLeadsResponse = useCallback((response) => {
     if (!response || !Array.isArray(response.content)) return;
     // Safety net: even if the server returns more, show ONLY the chosen district(s).
@@ -922,17 +943,27 @@ const CallPanel = ({ onNavigate, isMobile = false, navigationState = null }) => 
       status: l.status || 'Pending',
     })));
 
+    // Coming back to the Call Panel (e.g. after creating / sending a quotation or agreement):
+    // reopen the lead the telecaller was working on instead of jumping to the first lead.
+    let restored = null;
     if (leads.length > 0 && !activeLeadRef.current) {
-      activeLeadRef.current = leads[0];
-      setActiveLead(leads[0]);
-      setLeadStatus(leads[0].status || 'New');
+      let savedId = '';
+      try { savedId = sessionStorage.getItem('callpanel-last-lead') || ''; } catch { /* ignore */ }
+      if (savedId) restored = leads.find(l => String(getBusinessLeadId(l) || l.id) === savedId) || null;
+      const first = restored || leads[0];
+      activeLeadRef.current = first;
+      setActiveLead(first);
+      setLeadStatus(first.status || 'New');
     }
 
     // First load only: open the tab that really contains leads (New Leads preferred).
     if (!segmentPickedRef.current && leads.length > 0) {
       segmentPickedRef.current = true;
       const has = (g) => leads.some(l => getQueueGroup(l) === g);
-      const firstWithLeads = ['New Leads', 'Follow-ups', 'No Response'].find(has);
+      const restoredGroup = restored ? getQueueGroup(restored) : null;
+      const firstWithLeads = (restoredGroup && restoredGroup !== 'Done' && has(restoredGroup))
+        ? restoredGroup
+        : ['New Leads', 'Follow-ups', 'No Response'].find(has);
       if (firstWithLeads) setQueueSegment(firstWithLeads);
     }
   }, []);
@@ -1351,11 +1382,13 @@ const handleDialpadCall = async (rawNumber) => {
 
   const handleSaveDisposition = async () => {
     if (!activeLead) { showToast('Select a lead first.', 'error'); return; }
-    if (!followUpDate) { showToast('Please select the next follow-up date and time.', 'error'); return; }
-    if (!followUpNote.trim()) { showToast('Please enter the follow-up note.', 'error'); return; }
-    const selectedDate = new Date(followUpDate);
-    if (Number.isNaN(selectedDate.getTime())) { showToast('Please enter a valid follow-up date and time.', 'error'); return; }
-    if (selectedDate.getTime() <= Date.now()) { showToast('Follow-up date and time must be in the future.', 'error'); return; }
+    // Follow-up date / note are OPTIONAL. Only a NEW date the telecaller picked must be valid and in the future.
+    const followUpChanged = !!followUpDate && followUpDate !== (activeLead.tcNextRefollowupDate || '');
+    if (followUpChanged) {
+      const selectedDate = new Date(followUpDate);
+      if (Number.isNaN(selectedDate.getTime())) { showToast('Please enter a valid follow-up date and time.', 'error'); return; }
+      if (selectedDate.getTime() <= Date.now()) { showToast('Follow-up date and time must be in the future.', 'error'); return; }
+    }
 
     const businessLeadId = getBusinessLeadId(activeLead);
     if (!businessLeadId) {
@@ -1368,14 +1401,14 @@ const handleDialpadCall = async (rawNumber) => {
       // Preserve all imported Excel columns and the existing UP1...UPn history.
       const existingRecord = parseLeadUpdateRecord(activeLead);
       const nextRecord = { ...existingRecord };
-      nextRecord.TC_NEXT_FOLLOWUP_NOTE = followUpNote.trim();
+      if (followUpNote.trim()) nextRecord.TC_NEXT_FOLLOWUP_NOTE = followUpNote.trim();
 
       const leadPayload = {
         status: outcome,
-        // Existing Spring LeadRequest accepts this String field and persists it to MongoDB.
-        tcNextRefollowupDate: followUpDate,
         notes: JSON.stringify(nextRecord),
       };
+      // Existing Spring LeadRequest accepts this String field and persists it to MongoDB.
+      if (followUpDate) leadPayload.tcNextRefollowupDate = followUpDate;
 
       const durationSeconds = Math.max(0, Number(lastCallDuration || elapsed || 0));
       const endedAt = new Date();
@@ -1412,7 +1445,7 @@ const handleDialpadCall = async (rawNumber) => {
         ...activeLead,
         ...savedLead,
         status: outcome,
-        tcNextRefollowupDate: followUpDate,
+        ...(followUpDate ? { tcNextRefollowupDate: followUpDate } : {}),
         notes: leadPayload.notes,
       };
 
@@ -1421,7 +1454,7 @@ const handleDialpadCall = async (rawNumber) => {
         getBusinessLeadId(lead) === businessLeadId ? { ...lead, ...updatedLead } : lead
       ));
       setLeadStatus(outcome);
-      setFollowUps(current => {
+      if (followUpDate) setFollowUps(current => {
         const withoutCurrent = current.filter(item => String(item.id) !== String(businessLeadId));
         return [{
           id: businessLeadId,
@@ -1439,7 +1472,24 @@ const handleDialpadCall = async (rawNumber) => {
       setFollowUpDate('');
       setFollowUpNote('');
       setRemarks('');
-      showToast('Call outcome, remarks and next follow-up saved successfully.', 'success');
+      showToast('Call outcome saved successfully.', 'success');
+
+      // ---- move to the next lead automatically ----
+      // segmentLeads = the leads of the tab / district / search the telecaller is working in,
+      // exactly as it was when they clicked Save (so the saved lead is still in it).
+      const list = segmentLeads;
+      const at = list.findIndex(l => getBusinessLeadId(l) === businessLeadId);
+      const next =
+        list.slice(at + 1).find(l => getBusinessLeadId(l) !== businessLeadId) ||
+        list.find(l => getBusinessLeadId(l) !== businessLeadId);
+
+      if (!next) {
+        showToast('Queue completed. No more leads in this list.', 'info');
+      } else if (autoNext && canAgentCall()) {
+        startCall(next);            // shows the next lead and opens its call window
+      } else {
+        selectLeadForPanel(next);   // only shows the next lead
+      }
     } catch (error) {
       console.error('Failed to save call disposition:', error);
       showToast(`Save failed: ${error?.message || 'Please try again.'}`, 'error');
@@ -1738,9 +1788,13 @@ const handleDialpadCall = async (rawNumber) => {
           <div className="ref-form-group"><label>Outcome <b>*</b></label><select value={outcome} onChange={e => setOutcome(e.target.value)}>{['Interested','Not Interested','Call Back','No Answer','Converted','In Progress'].map(o => <option key={o}>{o}</option>)}</select></div>
           <div className="ref-form-group"><label>Interested In</label><div className="ref-check-row">{['School','College','Both'].map(item => <label key={item}><input type="checkbox" checked={interestedIn.includes(item)} onChange={() => setInterestedIn(p => p.includes(item) ? p.filter(x => x !== item) : [...p, item])}/>{item}</label>)}</div></div>
           <div className="ref-form-group"><label>Customer Sentiment</label><div className="ref-sentiments">{[['😊','Positive'],['😐','Neutral'],['😡','Negative']].map(([icon,label]) => <button key={label} className={sentiment === label ? 'active' : ''} onClick={() => setSentiment(label)}><span>{icon}</span>{label}</button>)}</div></div>
-          <div className="ref-form-group"><label>Next Follow-up Date & Time *</label><input type="datetime-local" value={followUpDate} onChange={e => setFollowUpDate(e.target.value)} required /></div>
-          <div className="ref-form-group"><label>Follow-up Note *</label><textarea rows={2} maxLength={1000} value={followUpNote} onChange={e => setFollowUpNote(e.target.value)} placeholder="What should be discussed in the next follow-up?" required /></div>
+          <div className="ref-form-group"><label>Next Follow-up Date & Time (optional)</label><input type="datetime-local" value={followUpDate} onChange={e => setFollowUpDate(e.target.value)} /></div>
+          <div className="ref-form-group"><label>Follow-up Note (optional)</label><textarea rows={2} maxLength={1000} value={followUpNote} onChange={e => setFollowUpNote(e.target.value)} placeholder="What should be discussed in the next follow-up?" /></div>
           <div className="ref-form-group"><label>Remarks</label><textarea rows={4} maxLength={500} value={remarks} onChange={e => setRemarks(e.target.value)} placeholder="Type remarks about this call..."/><small>{remarks.length}/500</small></div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 10px', fontSize: 13, color: '#374151' }}>
+            <input type="checkbox" checked={autoNext} onChange={e => toggleAutoNext(e.target.checked)} />
+            After saving, open the call window for the next lead automatically
+          </label>
           <button className="ref-save-outcome" onClick={handleSaveDisposition} disabled={savingOutcome || !activeLead}>{savingOutcome ? 'Saving...' : 'SAVE OUTCOME & CONTINUE'}</button>
         </section>
       </div>
