@@ -172,6 +172,14 @@ const formatFollowupDate = (value) => {
   return date.toLocaleString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 };
 
+// "24 Nov, 05:30 PM"
+const fmtCallStamp = (value) => {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true });
+};
+
 const fmtTime = s => {
   if (!s && s !== 0) return '00:00';
   const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), sec=s%60;
@@ -268,21 +276,78 @@ const AgentStatusSelector = ({ status, onChange, isCallActive }) => {
   );
 };
 
+// ─── All phone numbers of a lead ─────────────────────────────────────────────
+// A lead can carry 2-3 numbers: the primary one plus Excel columns such as
+// "Phone Number (Primary)", "Phone Number (Secondary)", "Mobile 2" ... (kept in excelData).
+const PHONE_KEY_RE = /(phone|mobile|\bmob\b|cell|\btel\b|whatsapp|contact|alt|number|\bnum\b|\bph\b|\bno\b)/i;
+const NOT_A_PHONE_KEY_RE = /(no\s*number|not\s*exist|not\s*answer|total\s*number|number\s*of|followup|follow-up|date|status|note|address|person|name|sl\.?\s*no|pin|id)/i;
+const last10 = v => String(v || '').replace(/\D/g, '').slice(-10);
+
+const extractLeadNumbers = (lead) => {
+  if (!lead) return [];
+  const out = [];
+  const seen = new Set();
+  const add = (raw, label, person = '') => {
+    // one cell may hold several numbers: "98765 43210 / 90000 11111"
+    String(raw ?? '').split(/[\/,;|\n]+/).forEach(part => {
+      const digits = part.replace(/\D/g, '');
+      if (digits.length < 10 || digits.length > 13) return;
+      if (/[A-Za-z]/.test(part.replace(/ext\.?\s*\d+/i, ''))) return;   // text cell, not a number
+      const key = last10(digits);
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push({ number: part.trim(), label, person });
+    });
+  };
+  add(lead.mobile, 'Primary', lead.contactPerson);
+  add(lead.phoneNumber, 'Phone');
+  add(lead.mobile2, 'Secondary', lead.contactPerson2);
+  add(lead.mobile3, 'Tertiary', lead.contactPerson3);
+  (lead.additionalMobiles || []).forEach((item, i) => {
+    add(typeof item === 'string' ? item : item?.number, typeof item === 'string' ? `Additional ${i + 1}` : (item?.label || `Additional ${i + 1}`), item?.contactPerson || '');
+  });
+  let fromNotes = {};
+  if (typeof lead.notes === 'string' && lead.notes.trim().startsWith('{')) {
+    try { const parsed = JSON.parse(lead.notes); if (parsed && typeof parsed === 'object') fromNotes = parsed; } catch { /* plain-text note */ }
+  }
+  const excel = { ...fromNotes, ...(lead.excelData && typeof lead.excelData === 'object' ? lead.excelData : {}) };
+  Object.entries(excel).forEach(([key, value]) => {
+    if (!PHONE_KEY_RE.test(key) || NOT_A_PHONE_KEY_RE.test(key)) return;
+    add(value, String(key).replace(/_/g, ' ').trim());
+  });
+  return out;
+};
+
 // ─── Call Initiation Modal ────────────────────────────────────────────────────
 const CallInitiationModal = ({ lead, onClose, onCall, canCall }) => {
   const [isLoading, setIsLoading] = useState(false);
+  const [fullLead, setFullLead] = useState(lead);
+  const [leadCalls, setLeadCallsLocal] = useState([]);
   const [selectedNumber, setSelectedNumber] = useState(lead?.mobile || '');
 
-  const availableNumbers = [
-    { number: lead?.mobile, label: 'Primary', person: lead?.contactPerson },
-    { number: lead?.mobile2, label: 'Secondary', person: lead?.contactPerson2 },
-    { number: lead?.mobile3, label: 'Tertiary', person: lead?.contactPerson3 },
-    ...(lead?.additionalMobiles || []).map((item, index) => ({
-      number: typeof item === 'string' ? item : item.number,
-      label: typeof item === 'string' ? `Additional ${index + 1}` : (item.label || `Additional ${index + 1}`),
-      person: typeof item === 'string' ? '' : (item.contactPerson || ''),
-    })),
-  ].filter(c => c.number && c.number.trim() !== '');
+  // The queue list leaves out excelData (speed), so load the full lead + its calls once the popup opens.
+  useEffect(() => {
+    let stopped = false;
+    const id = getBusinessLeadId(lead);
+    if (!id) return undefined;
+    leadService.getLead(id)
+      .then(full => { if (!stopped && full) setFullLead({ ...lead, ...full }); })
+      .catch(() => {});
+    callService.getByLead(id)
+      .then(list => { if (!stopped && Array.isArray(list)) setLeadCallsLocal(list); })
+      .catch(() => {});
+    return () => { stopped = true; };
+  }, [lead]);
+
+  const availableNumbers = extractLeadNumbers(fullLead);
+  const timesCalled = (num) => leadCalls.filter(c => last10(c.calledNumber) === last10(num)).length;
+
+  // keep a valid selection once the numbers are known
+  useEffect(() => {
+    if (availableNumbers.length && !availableNumbers.some(n => last10(n.number) === last10(selectedNumber))) {
+      setSelectedNumber(availableNumbers[0].number);
+    }
+  }, [availableNumbers.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -305,7 +370,7 @@ const CallInitiationModal = ({ lead, onClose, onCall, canCall }) => {
           </div>
 
           <div className="form-group">
-            <label>Select Number to Call</label>
+            <label>Select Number to Call {availableNumbers.length > 1 ? `(${availableNumbers.length} numbers)` : ''}</label>
             <select
               className="number-select"
               value={selectedNumber}
@@ -314,7 +379,7 @@ const CallInitiationModal = ({ lead, onClose, onCall, canCall }) => {
             >
               {availableNumbers.map((contact, idx) => (
                 <option key={idx} value={contact.number}>
-                  {contact.label}: {contact.number} {contact.person ? `(${contact.person})` : ''}
+                  {contact.label}: {contact.number} {contact.person ? `(${contact.person})` : ''} — {timesCalled(contact.number) > 0 ? `called ${timesCalled(contact.number)}×` : 'not called'}
                 </option>
               ))}
             </select>
@@ -461,6 +526,96 @@ const OutcomeModal = ({ lead, onClose, onSave, loading }) => {
 };
 
 // ─── Main Component ────────────────────────────────────────────────────────────
+// ─── Dialpad / Keyboard Modal ─────────────────────────────────────────────────
+// Lets the telecaller dial ANY number: tap the keypad, type on the physical
+// keyboard, or paste. Press Enter (or the Call button) to place the call.
+const DialpadModal = ({ onClose, onDial, canCall, busy }) => {
+  const [num, setNum] = useState('');
+  const inputRef = useRef(null);
+  const keys = [
+    ['1',''],['2','ABC'],['3','DEF'],['4','GHI'],['5','JKL'],['6','MNO'],
+    ['7','PQRS'],['8','TUV'],['9','WXYZ'],['*',''],['0','+'],['#',''],
+  ];
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  // keep only characters a phone number can contain
+  const clean = (v) => String(v || '').replace(/[^0-9+*#]/g, '');
+  const digitCount = num.replace(/\D/g, '').length;
+  const valid = digitCount >= 5;
+
+  const submit = () => {
+    if (!canCall || busy || !valid) return;
+    onDial(num);
+  };
+
+  const press = (k) => { setNum(n => n + k); inputRef.current?.focus(); };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{position:'fixed',inset:0,background:'rgba(0,0,0,.45)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999}}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{background:'#fff',borderRadius:16,width:320,maxWidth:'92vw',padding:20,boxShadow:'0 20px 50px rgba(0,0,0,.25)'}}
+      >
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+          <strong style={{fontSize:16}}>⌨ Dial a Number</strong>
+          <button onClick={onClose} style={{border:'none',background:'transparent',fontSize:18,cursor:'pointer'}}>✕</button>
+        </div>
+
+        <input
+          ref={inputRef}
+          type="tel"
+          inputMode="tel"
+          autoComplete="off"
+          value={num}
+          placeholder="Type or paste number"
+          onChange={e => setNum(clean(e.target.value))}
+          onKeyDown={e => {
+            if (e.key === 'Enter') { e.preventDefault(); submit(); }
+            if (e.key === 'Escape') onClose();
+          }}
+          style={{width:'100%',boxSizing:'border-box',padding:'12px 14px',fontSize:22,letterSpacing:1,textAlign:'center',border:'1px solid #e5e7eb',borderRadius:10,marginBottom:12}}
+        />
+
+        <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}}>
+          {keys.map(([k, sub]) => (
+            <button
+              key={k}
+              onClick={() => press(k)}
+              style={{padding:'10px 0',border:'1px solid #e5e7eb',borderRadius:10,background:'#f9fafb',cursor:'pointer',fontSize:20,fontWeight:600,lineHeight:1.1}}
+            >
+              {k}
+              <div style={{fontSize:9,color:'#9ca3af',fontWeight:500,minHeight:11}}>{sub}</div>
+            </button>
+          ))}
+        </div>
+
+        <div style={{display:'flex',gap:8,marginTop:12}}>
+          <button
+            onClick={() => setNum(n => n.slice(0, -1))}
+            onDoubleClick={() => setNum('')}
+            title="Backspace (double-click to clear)"
+            style={{flex:'0 0 64px',padding:'12px 0',border:'1px solid #e5e7eb',borderRadius:10,background:'#fff',cursor:'pointer',fontSize:18}}
+          >⌫</button>
+          <button
+            onClick={submit}
+            disabled={!canCall || busy || !valid}
+            style={{flex:1,padding:'12px 0',border:'none',borderRadius:10,fontWeight:700,fontSize:15,color:'#fff',
+              background: (!canCall || busy || !valid) ? '#cbd5e1' : '#7b1113',
+              cursor: (!canCall || busy || !valid) ? 'not-allowed' : 'pointer'}}
+          >📞 Call</button>
+        </div>
+
+        {!canCall && <p style={{color:'#b91c1c',fontSize:12,margin:'10px 0 0'}}>Status must be Available to make calls.</p>}
+        {busy && <p style={{color:'#b45309',fontSize:12,margin:'10px 0 0'}}>A call is already in progress. End it first.</p>}
+      </div>
+    </div>
+  );
+};
+
 const CallPanel = ({ onNavigate, isMobile = false, navigationState = null }) => {
   const { user } = useAuth();
   const [queue, setQueue] = useState([]);
@@ -484,9 +639,19 @@ const CallPanel = ({ onNavigate, isMobile = false, navigationState = null }) => 
   const [agentStatus, setAgentStatus] = useState('Available');
   const [queueSearch, setQueueSearch] = useState('');
   const [queueSegment, setQueueSegment] = useState('New Leads');
+  // District filter: telecaller picks which of their assigned districts to work on.
+  const [myDistricts, setMyDistricts] = useState([]);              // [{ name, leadCount }]
+  const [selectedDistricts, setSelectedDistricts] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('callpanel-districts') || '[]'); } catch { return []; }
+  });                                                              // [] = all assigned districts
+  const [leadCalls, setLeadCalls] = useState([]);                  // every call made to the active lead
+  const [activeNumbers, setActiveNumbers] = useState([]);          // every phone number of the active lead
   const [callStats, setCallStats] = useState({ totalCalls: 0, answered: 0, notAnswered: 0, interested: 0, notInterested: 0, talkSecs: 0 });
   const [toast, setToast] = useState(null);
   const [showCallInit, setShowCallInit] = useState(false);
+  const [showDialpad, setShowDialpad] = useState(false);
+  const [dialedNumber, setDialedNumber] = useState('');   // number typed on the dialpad (manual call)
+  const manualCallRef = useRef('');                      // non-empty while a manual dialpad call is in flight
   const [showOutcome, setShowOutcome] = useState(false);
   const [callHistory, setCallHistory] = useState([]);
   const [followUps, setFollowUps] = useState([]);
@@ -525,7 +690,7 @@ const CallPanel = ({ onNavigate, isMobile = false, navigationState = null }) => 
   applyStatusRef.current = (cmd) => {
     if (!cmd || !cmd.status) return;
     const st = String(cmd.status).toUpperCase();
-    const leadName = activeLead?.name || 'Lead';
+    const leadName = manualCallRef.current || activeLead?.name || 'Lead';
     const duration = Number(cmd.duration) || 0;
     const changed = lastSeenStatusRef.current !== st;
     lastSeenStatusRef.current = st;
@@ -571,7 +736,9 @@ const CallPanel = ({ onNavigate, isMobile = false, navigationState = null }) => 
     setCurrentCallId(null);
     wasConnectedRef.current = false;
 
-    if (activeLead) setEndedLeadId(activeLead.id || activeLead._id);
+    // A manual dialpad call is not tied to the selected lead.
+    if (activeLead && !manualCallRef.current) setEndedLeadId(activeLead.id || activeLead._id);
+    manualCallRef.current = '';
 
     setTodaySummary(prev => ({
       ...prev,
@@ -686,7 +853,7 @@ const CallPanel = ({ onNavigate, isMobile = false, navigationState = null }) => 
         leadMobile: activeLead.mobile || activeLead.phoneNumber || '',
         contactPerson: activeLead.contactPerson || '',
         category: activeLead.category || 'School',
-        calledNumber: activeLead.mobile || activeLead.phoneNumber || '',
+        calledNumber: lastDialedRef.current || activeLead.mobile || activeLead.phoneNumber || '',
         callMethod: 'local_sim',
         callStatus: 'ended',
         outcome: selectedOutcome,
@@ -730,12 +897,19 @@ const CallPanel = ({ onNavigate, isMobile = false, navigationState = null }) => 
   // so every lead click / first load re-created it and re-fired the 500-lead download).
   const activeLeadRef = useRef(null);
   const queueLenRef = useRef(0);
+  const districtKeyRef = useRef('ALL');
+  const lastDialedRef = useRef('');   // the exact number the telecaller dialled for the current lead
+  const selectedDistrictsRef = useRef([]);
   const segmentPickedRef = useRef(false);
   useEffect(() => { activeLeadRef.current = activeLead; }, [activeLead]);
 
   const applyLeadsResponse = useCallback((response) => {
     if (!response || !Array.isArray(response.content)) return;
-    const leads = response.content.map(normalizeLead);
+    // Safety net: even if the server returns more, show ONLY the chosen district(s).
+    const chosen = selectedDistrictsRef.current.map(d => d.trim().toLowerCase());
+    const leads = response.content
+      .map(normalizeLead)
+      .filter(l => chosen.length === 0 || chosen.includes(String(l.district || '').trim().toLowerCase()));
     queueLenRef.current = leads.length;
     setQueue(leads);
     setFollowUps(leads.filter(l => l.isFollowUp).map(l => ({
@@ -765,19 +939,28 @@ const CallPanel = ({ onNavigate, isMobile = false, navigationState = null }) => 
 
   // force=true -> skip the 15s cache (used after saving an outcome / pressing refresh).
   // Cached leads are painted instantly; fresh leads replace them when they arrive.
+  selectedDistrictsRef.current = selectedDistricts;
+
   const loadLeads = useCallback(async (force = false) => {
     try {
       if (queueLenRef.current === 0) setLoading(true);
-      await swr('callpanel-leads', () => leadService.getLeads(0, 500, '', '', '', ''), {
+      const districtKey = [...selectedDistricts].sort().join('|') || 'ALL';
+      districtKeyRef.current = districtKey;
+      await swr('callpanel-leads:' + districtKey, () => leadService.getLeads(0, 500, '', '', '', '', selectedDistricts), {
         ttl: 15000,
         force,
-        onData: (response) => { applyLeadsResponse(response); setLoading(false); },
+        onData: (response) => {
+          // ignore a slow response that belongs to a district the telecaller already switched away from
+          if (districtKeyRef.current !== districtKey) return;
+          applyLeadsResponse(response);
+          setLoading(false);
+        },
       });
     } catch (error) {
       console.error('Failed to load leads:', error);
       showToast('Failed to load leads: ' + error.message, 'error');
     } finally { setLoading(false); }
-  }, [applyLeadsResponse]);
+  }, [applyLeadsResponse, selectedDistricts]);
 
   const loadCallHistory = useCallback(async () => {
     try {
@@ -838,9 +1021,66 @@ const CallPanel = ({ onNavigate, isMobile = false, navigationState = null }) => 
 
   useEffect(() => {
     loadLeads();
+  }, [loadLeads]);
+
+  useEffect(() => {
     loadCallHistory();
     loadCallStats();
-  }, [loadLeads, loadCallHistory, loadCallStats]);
+  }, [loadCallHistory, loadCallStats]);
+
+  // Districts assigned to this telecaller (set by Super Admin -> District Assignment)
+  useEffect(() => {
+    let stopped = false;
+    leadService.getAssignedDistricts()
+      .then(list => {
+        if (stopped || !Array.isArray(list)) return;
+        const names = list.map(d => d.name || d.district).filter(Boolean);
+        setMyDistricts(list.map(d => ({ name: d.name || d.district, leadCount: d.leadCount ?? 0 })));
+        // drop a saved selection that is no longer assigned
+        setSelectedDistricts(cur => cur.filter(n => names.some(x => x.toLowerCase() === n.toLowerCase())));
+      })
+      .catch(err => console.warn('Could not load assigned districts:', err));
+    return () => { stopped = true; };
+  }, []);
+
+  // Single-select: click a district -> ONLY that district's leads. Click "All" -> every assigned district.
+  const selectDistrict = (name) => {
+    const next = name ? [name] : [];
+    setSelectedDistricts(next);
+    try { localStorage.setItem('callpanel-districts', JSON.stringify(next)); } catch { /* ignore */ }
+    setQueue([]);                      // clear the old district's leads immediately
+    queueLenRef.current = 0;
+    activeLeadRef.current = null;      // pick the first lead of the new selection
+    segmentPickedRef.current = false;
+    setActiveLead(null);
+  };
+
+  // All phone numbers of the active lead (primary + Excel secondary/tertiary columns)
+  useEffect(() => {
+    if (!activeLead) { setActiveNumbers([]); return undefined; }
+    setActiveNumbers(extractLeadNumbers(activeLead));
+    const id = getBusinessLeadId(activeLead);
+    if (!id) return undefined;
+    let stopped = false;
+    leadService.getLead(id)
+      .then(full => { if (!stopped && full) setActiveNumbers(extractLeadNumbers({ ...activeLead, ...full })); })
+      .catch(() => {});
+    return () => { stopped = true; };
+  }, [activeLead && getBusinessLeadId(activeLead)]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Every call made to the active lead (date + time, status, duration, who called)
+  useEffect(() => {
+    const id = activeLead ? getBusinessLeadId(activeLead) : '';
+    if (!id) { setLeadCalls([]); return; }
+    let stopped = false;
+    callService.getByLead(id)
+      .then(list => {
+        if (stopped || !Array.isArray(list)) return;
+        setLeadCalls([...list].sort((a, b) => new Date(b.startedAt || b.createdAt || 0) - new Date(a.startedAt || a.createdAt || 0)));
+      })
+      .catch(() => { if (!stopped) setLeadCalls([]); });
+    return () => { stopped = true; };
+  }, [activeLead, callHistory]);
 
   useEffect(() => {
     loadActivityHistory(activeLead);
@@ -868,7 +1108,10 @@ const CallPanel = ({ onNavigate, isMobile = false, navigationState = null }) => 
   }, [idleCountdown]);
 
   
-const makeCall = async (number) => {
+const makeCall = async (number, { manual = false, lead: forcedLead = null } = {}) => {
+  // forcedLead: used when the call is started from another page (e.g. Demo) before React has
+  // finished selecting the lead.
+  const leadForCall = forcedLead || activeLead;
   if (!canAgentCall()) {
     showToast(
       'You are not available to make calls. Please change status to Available.',
@@ -889,12 +1132,17 @@ const makeCall = async (number) => {
     setElapsed(0);
     wasConnectedRef.current = false;
     lastSeenStatusRef.current = '';
+    manualCallRef.current = manual ? number : '';
+    // show the dialled number when it is not the lead's own primary number (manual dial / Demo contact)
+    const sameAsLead = String(number).replace(/\D/g, '').slice(-10) === String(leadForCall?.mobile || '').replace(/\D/g, '').slice(-10);
+    lastDialedRef.current = manual ? '' : number;
+    setDialedNumber(manual || !sameAsLead ? number : '');
 
     // The backend takes the telecaller from the login token, so the call always goes to
     // THIS telecaller's own Windows companion.
     const result = await localSimCallService.call({
-      leadId: getBusinessLeadId(activeLead),
-      leadName: activeLead?.name || 'Unknown',
+      leadId: manual ? '' : getBusinessLeadId(leadForCall),
+      leadName: manual ? 'Manual dial' : (leadForCall?.name || 'Unknown'),
       leadMobile: number,
     });
 
@@ -903,7 +1151,7 @@ const makeCall = async (number) => {
     }
     setCurrentCallId(result.requestId);
 
-    showToast(`Calling ${activeLead?.name || number} from your phone...`, 'info');
+    showToast(`Calling ${manual ? number : (leadForCall?.name || number)} from your phone...`, 'info');
   } catch (error) {
     console.error('Local SIM call request failed:', error);
 
@@ -915,7 +1163,27 @@ const makeCall = async (number) => {
     setCallState('idle');
     setIsCallActive(false);
     setCurrentCallId(null);
+    manualCallRef.current = '';
   }
+};
+
+// Dial any number typed/pasted on the dialpad (works with or without a selected lead)
+const handleDialpadCall = async (rawNumber) => {
+  if (!canAgentCall()) {
+    showToast('You are not available to make calls. Please change status to Available.', 'error');
+    return;
+  }
+  if (callState !== 'idle') {
+    showToast('A call is already in progress. End it before dialing a new number.', 'error');
+    return;
+  }
+  const number = String(rawNumber || '').replace(/[^0-9+*#]/g, '');
+  if (number.replace(/\D/g, '').length < 5) {
+    showToast('Enter a valid phone number.', 'error');
+    return;
+  }
+  setShowDialpad(false);
+  await makeCall(number, { manual: true });
 };
 
 
@@ -940,6 +1208,7 @@ const makeCall = async (number) => {
       showToast('Cannot start call. Agent status is not Available.', 'error');
       return;
     }
+    setDialedNumber('');
     clearInterval(idleRef.current);
     setIdleCountdown(null);
     setActiveLead(lead);
@@ -955,6 +1224,7 @@ const makeCall = async (number) => {
   };
 
   const selectLeadForPanel = (lead) => {
+    if (callState === 'idle') setDialedNumber('');
     setActiveLead(lead);
     setLeadStatus(lead.status || 'New');
     setDetailTab('Customer Details');
@@ -983,6 +1253,11 @@ const makeCall = async (number) => {
       setQueueSegment(getQueueGroup(lead));
       selectLeadForPanel(lead);
       if (navigationState.action === 'startCall') startCall(lead);
+      // From the Demo page: open this lead and dial THAT number straight away.
+      if (navigationState.action === 'callNumber' && navigationState.phone) {
+        if (callState !== 'idle') showToast('A call is already in progress. End it before starting a new call.', 'error');
+        else makeCall(navigationState.phone, { lead });
+      }
     };
 
     const found = queue.find(sameLead);
@@ -997,6 +1272,8 @@ const makeCall = async (number) => {
         setQueue(current => current.some(sameLead) ? current : [lead, ...current]);
         openLead(lead);
       } catch (error) {
+        // Demo call: the lead could not be fetched -> still dial the demo's number
+        if (navigationState.action === 'callNumber' && navigationState.phone) { openLead(normalizeLead(target)); return; }
         showToast(`Could not open that lead: ${error?.message || 'Please try again.'}`, 'error');
       }
     })();
@@ -1108,7 +1385,7 @@ const makeCall = async (number) => {
         leadMobile: activeLead.mobile || activeLead.phoneNumber || '',
         contactPerson: activeLead.contactPerson || '',
         category: activeLead.category || 'School',
-        calledNumber: activeLead.mobile || activeLead.phoneNumber || '',
+        calledNumber: lastDialedRef.current || activeLead.mobile || activeLead.phoneNumber || '',
         callMethod: 'local_sim',
         callStatus: 'ended',
         outcome,
@@ -1288,7 +1565,7 @@ const makeCall = async (number) => {
   }, []);
 
   const handleCopyMobile = () => {
-    navigator.clipboard?.writeText(activeLead?.mobile || '').catch(()=>{});
+    navigator.clipboard?.writeText(dialedNumber || activeLead?.mobile || '').catch(()=>{});
     showToast('📋 Mobile number copied!');
   };
 
@@ -1363,6 +1640,26 @@ const makeCall = async (number) => {
       <div className="ref-main-grid">
         <section className="ref-card ref-queue-card">
           <div className="ref-card-title-row"><h2>CALL QUEUE <span>({queue.length})</span></h2><button className="ref-filter-btn" onClick={refreshQueue}><RefreshCw size={16} /></button></div>
+          {myDistricts.length > 0 && (
+            <div className="cp-district-bar" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '8px 0' }}>
+              <button
+                onClick={() => selectDistrict(null)}
+                style={{ padding: '4px 10px', borderRadius: 999, border: '1px solid #7b1113', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                  background: selectedDistricts.length === 0 ? '#7b1113' : '#fff', color: selectedDistricts.length === 0 ? '#fff' : '#7b1113' }}
+              >All ({myDistricts.reduce((n, d) => n + (d.leadCount || 0), 0)})</button>
+              {myDistricts.map(d => {
+                const on = selectedDistricts.length === 1 && selectedDistricts[0].toLowerCase() === d.name.toLowerCase();
+                return (
+                  <button
+                    key={d.name}
+                    onClick={() => selectDistrict(d.name)}
+                    style={{ padding: '4px 10px', borderRadius: 999, border: '1px solid #7b1113', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                      background: on ? '#7b1113' : '#fff', color: on ? '#fff' : '#7b1113' }}
+                  >{d.name} ({d.leadCount})</button>
+                );
+              })}
+            </div>
+          )}
           <div className="ref-search"><span>⌕</span><input placeholder="Search leads..." value={queueSearch} onChange={e => setQueueSearch(e.target.value)} /></div>
           <div className="ref-queue-tabs">
             {[
@@ -1375,7 +1672,12 @@ const makeCall = async (number) => {
             {loading ? <div className="cp-empty">Loading leads...</div> : segmentLeads.length === 0 ? <div className="cp-empty">No leads found.</div> : segmentLeads.map(lead => (
               <div key={lead.id} className={`ref-lead-row ${activeLead?.id === lead.id ? 'selected' : ''}`} onClick={() => selectLeadForPanel(lead)}>
                 <Avatar initials={lead.initials} name={lead.name} size={40} />
-                <div className="ref-lead-main"><strong>{lead.name}</strong><span>{lead.contactPerson || '--'}</span><small>☎ {lead.mobile || 'N/A'}</small></div>
+                <div className="ref-lead-main"><strong>{lead.name}</strong><span>{lead.contactPerson || '--'}</span><small>☎ {lead.mobile || 'N/A'}{lead.district ? ` · ${lead.district}` : ''}</small>
+                  <small style={{ display: 'block', marginTop: 2, fontWeight: 600, color: lead.callCount > 0 ? '#b45309' : '#6b7280' }}>
+                    {lead.callCount > 0
+                      ? `📞 Called ${lead.callCount} time${lead.callCount > 1 ? 's' : ''} · last ${fmtCallStamp(lead.lastCalledAt)}`
+                      : '📞 Not called yet'}
+                  </small></div>
                 <div className="ref-lead-side"><span className={`ref-queue-state ${getQueueGroup(lead) === 'Follow-ups' ? 'follow' : getQueueGroup(lead) === 'No Response' ? 'no-response' : 'new'}`}>{getQueueGroup(lead) === 'Follow-ups' ? 'Follow-up' : getQueueGroup(lead) === 'No Response' ? 'No Response' : 'New'}</span><button onClick={e => {e.stopPropagation(); startCall(lead)}} disabled={!canAgentCall()}><PhoneCall size={18} /></button></div>
               </div>
             ))}
@@ -1403,18 +1705,32 @@ const makeCall = async (number) => {
               <Avatar initials={activeLead?.initials} name={activeLead?.name || 'Lead'} size={52} />
               <h3>{activeLead?.name || 'No lead selected'}</h3>
               <span>{activeLead?.contactPerson || '--'}</span>
-              <span>☎ {activeLead?.mobile || 'No number'}</span>
+              <span>☎ {dialedNumber ? `${dialedNumber}${manualCallRef.current ? ' (manual dial)' : ' (alternate number)'}` : (activeLead?.mobile || 'No number')}</span>
               <strong className={callState === 'connected' ? 'connected' : ''}><i></i>{callState === 'connected' ? 'CONNECTED' : callState === 'ringing' ? 'RINGING' : callState === 'connecting' ? 'REQUEST PENDING' : 'READY'}</strong>
               <div className="ref-active-timer">{fmtTime(elapsed)}</div>
             </div>
             <div className="ref-call-controls">
               <button onClick={handleMute} disabled={!canControl || controlBusy}>{isMuted ? <MicOff size={18}/> : <Mic size={18}/>}<span>{isMuted ? 'Unmute' : 'Mute'}</span></button>
               <button onClick={handleHold} disabled={!canControl || controlBusy}>{callState === 'onhold' ? <Play size={18}/> : <Pause size={18}/>}<span>{callState === 'onhold' ? 'Resume' : 'Phone Hold'}</span></button>
+              <button onClick={() => setShowDialpad(true)} disabled={!canAgentCall()} title="Dial any number"><Phone size={18}/><span>Dialpad</span></button>
               <button className="end" onClick={finaliseCall} disabled={callState === 'idle'}><PhoneOff size={18}/><span>End Call</span></button>
             </div>
           </div>
           <div className="ref-recording"><span><i></i> REC</span><span>Not recording (recording integration unavailable)</span><button disabled>Recording unavailable</button></div>
-          <div className="ref-current-number"><span>☎</span><div><small>Current Number</small><strong>{activeLead?.mobile || '--'}</strong></div><button onClick={handleCopyMobile}>⧉</button></div>
+          <div className="ref-current-number"><span>☎</span><div><small>Current Number</small><strong>{dialedNumber || activeLead?.mobile || '--'}</strong></div><button onClick={handleCopyMobile}>⧉</button></div>
+          {activeNumbers.length > 1 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '8px 0' }}>
+              {activeNumbers.map(n => (
+                <button
+                  key={n.number}
+                  disabled={!canAgentCall() || callState !== 'idle'}
+                  onClick={() => makeCall(n.number)}
+                  title={`Call ${n.label}`}
+                  style={{ padding: '4px 10px', borderRadius: 999, border: '1px solid #7b1113', background: '#fff', color: '#7b1113', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+                >📞 {n.label}: {n.number}</button>
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="ref-card ref-disposition-card">
@@ -1440,7 +1756,7 @@ const makeCall = async (number) => {
                 {[['Lead ID', activeLead.leadId || activeLead.id],['Organization', activeLead.organization || activeLead.name],['Contact Person', activeLead.contactPerson || '--'],['Mobile', activeLead.mobile || '--'],['Email', activeLead.email || '--']].map(([k,v]) => <div className="ref-info-row" key={k}><span>{k}</span><strong>{v}</strong></div>)}
               </div>
               <div className="ref-info-col">
-                {[['District', activeLead.district || '--'],['Area', activeLead.area || '--'],['Category', activeLead.category || 'School'],['Source', activeLead.source || '--'],['Campaign', activeLead.campaign || '--']].map(([k,v]) => <div className="ref-info-row" key={k}><span>{k}</span><strong>{v}</strong></div>)}
+                {[['Phone Numbers', activeNumbers.length ? activeNumbers.map(n => n.number).join(' · ') : (activeLead.mobile || '--')],['District', activeLead.district || '--'],['Area', activeLead.area || '--'],['Category', activeLead.category || 'School'],['Source', activeLead.source || '--'],['Campaign', activeLead.campaign || '--']].map(([k,v]) => <div className="ref-info-row" key={k}><span>{k}</span><strong>{v}</strong></div>)}
               </div>
             </> : <div className="cp-empty">Select a lead to view customer details.</div>}
           </div>
@@ -1489,7 +1805,21 @@ const makeCall = async (number) => {
                 <div className="ref-note-footer"><span>{notes.length}/2000 · Next: UP{getLeadUpdates(activeLead).reduce((max, item) => Math.max(max, item.number), 0) + 1}</span><button onClick={handleSaveNotes} disabled={!activeLead || !notes.trim()}>Save Update</button></div>
               </div>
             </div>}
-            {detailTab === 'Call History' && <div className="ref-scroll-panel"><strong>Call History</strong>{callHistory.slice(0,6).map((c,i)=><div className="ref-call-history-row" key={c.id || i}><span>{c.time || c.endTime}</span><b>{c.duration}</b>{renderStatus(c.status)}<button onClick={() => {const lead = queue.find(l => l.id === c.leadId || l._id === c.leadId) || {...c}; startCall(lead)}}><PhoneCall size={15}/></button></div>)}{callHistory.length === 0 && <p>No call history yet.</p>}</div>}
+            {detailTab === 'Call History' && <div className="ref-scroll-panel">
+              <strong>Call History{activeLead ? ` — ${activeLead.name}` : ''}</strong>
+              <p style={{ margin: '4px 0 8px', fontSize: 13 }}>
+                {leadCalls.length > 0 ? `Called ${leadCalls.length} time${leadCalls.length > 1 ? 's' : ''}` : 'Not called yet'}
+              </p>
+              {leadCalls.map((c, i) => (
+                <div className="ref-call-history-row" key={c.id || i}>
+                  <span>#{leadCalls.length - i} · {fmtCallStamp(c.startedAt || c.createdAt)}</span>
+                  <b>{c.duration ? fmtTime(c.duration) : '00:00'}</b>
+                  {renderStatus(c.outcome || c.callStatus)}
+                  {c.agentName && <small style={{ color: '#6b7280' }}>{c.agentName}</small>}
+                </div>
+              ))}
+              {leadCalls.length === 0 && <p>No calls to this lead yet.</p>}
+            </div>}
             {detailTab === 'Follow-ups' && <div className="ref-scroll-panel"><strong>Upcoming Follow-ups</strong>{followUps.length ? followUps.slice(0,6).map((f,i)=><div className="ref-followup-row" key={f.id || i}><div><b>{f.lead || 'Lead'} · {f.date}{f.time ? ` | ${f.time}` : ''}</b><span>{f.note || 'Follow-up scheduled'}</span></div><em>{f.type || f.status || 'Pending'}</em></div>) : <p>No follow-ups scheduled.</p>}</div>}
           </div>
 
@@ -1505,6 +1835,15 @@ const makeCall = async (number) => {
           </div>
         </div>
       </section>
+
+      {showDialpad && (
+        <DialpadModal
+          onClose={() => setShowDialpad(false)}
+          onDial={handleDialpadCall}
+          canCall={canAgentCall()}
+          busy={callState !== 'idle'}
+        />
+      )}
 
       {showCallInit && (
         <CallInitiationModal

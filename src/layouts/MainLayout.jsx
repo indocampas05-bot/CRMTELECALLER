@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import Sidebar from "../components/Sidebar/Sidebar";
 import Navbar from "../components/Navbar/Navbar";
+import FollowUpReminders from "../components/FollowUpReminders/FollowUpReminders";
 import "./MainLayout.css";
 
 const MainLayout = ({ children, activePage, onNavigate }) => {
@@ -18,6 +19,9 @@ const MainLayout = ({ children, activePage, onNavigate }) => {
         <Navbar toggleSidebar={() => setCollapsed(!collapsed)} />
         <div className="page-content">{children}</div>
       </div>
+
+      {/* Pops up when a scheduled follow-up date/time arrives (works on every page) */}
+      <FollowUpReminders onNavigate={onNavigate} />
     </div>
   );
 };

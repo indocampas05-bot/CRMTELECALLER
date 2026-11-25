@@ -63,7 +63,8 @@ export const leadService = {
     search = '',
     category = '',
     status = '',
-    assignedTo = ''
+    assignedTo = '',
+    districts = []          // NEW: telecaller's chosen districts (subset of assigned ones)
   ) => {
 
     const params = new URLSearchParams({
@@ -99,6 +100,10 @@ export const leadService = {
       params.append('assignedTo', assignedTo);
     }
 
+    if (Array.isArray(districts) && districts.length > 0) {
+      params.append('districts', districts.join(','));
+    }
+
     return apiCall(`/telecaller/leads?${params.toString()}`);
   },
 
@@ -106,6 +111,9 @@ export const leadService = {
   // ============================================================
   // TELECALLER - MY DISTRICTS
   // ============================================================
+
+  // NEW: districts assigned to the logged-in telecaller, with lead counts
+  getAssignedDistricts: () => apiCall('/telecaller/leads/districts'),
 
   getMyDistricts: () => {
     return apiCall('/leads/my-districts');
@@ -218,16 +226,20 @@ export const leadService = {
   // ============================================================
 
   updateLead: (id, leadData) => {
-
+ 
     return apiCall(
       `/leads/${encodeURIComponent(id)}`,
       {
         method: 'PUT',
         body: JSON.stringify(leadData),
       }
-    );
+    ).then((result) => {
+      // tell the follow-up reminder that a follow-up date may have changed
+      try { window.dispatchEvent(new Event('followups-changed')); } catch { /* ignore */ }
+      return result;
+    });
   },
-
+ 
 
   // ============================================================
   // DELETE LEAD

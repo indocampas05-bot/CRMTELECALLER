@@ -2,6 +2,7 @@
 VITE_API_BASE=https://crmbackend-5d2o.onrender.com/api
 VITE_WS_BASE=ws://crmbackend-5d2o.onrender.com/ws
 
+
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\package-lock.json =====
 {
   "name": "crm-app",
@@ -3542,7 +3543,7 @@ VITE_WS_BASE=ws://crmbackend-5d2o.onrender.com/ws
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "node ./node_modules/vite/bin/vite.js build",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -3568,6 +3569,13 @@ VITE_WS_BASE=ws://crmbackend-5d2o.onrender.com/ws
     "@vitejs/plugin-react": "^4.2.1",
     "vite": "^5.2.0"
   }
+}
+
+===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\vercel.json =====
+{
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
 }
 
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\vite.config.js =====
@@ -3604,6 +3612,11 @@ export default defineConfig({
     }
   }
 });
+
+===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\.vscode\settings.json =====
+{
+    "git.ignoreLimitWarning": true
+}
 
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\App.jsx =====
 // src/App.jsx
@@ -3658,7 +3671,7 @@ const AppContent = () => {
       dashboard: <Dashboard />,
       leads: <Leads onNavigate={handleNavigate} />,
       callpanel: <CallPanel onNavigate={handleNavigate} navigationState={navigationState} />,
-      followups: <Followups />,
+      followups: <Followups onNavigate={handleNavigate} />,
       quotations: <Quotations />,
       agreements: <Agreements />,
       reports: <Reports />,
@@ -3673,7 +3686,7 @@ const AppContent = () => {
       'settings-about': <Settings onNavigate={handleNavigate} activeTab="about" />,
       users: <Users />,
       help: <Help />,
-      demo: <Demo />,
+      demo: <Demo onNavigate={handleNavigate} />,
       payment: <Payment />,
       categories: <Categories />,
     };
@@ -6072,6 +6085,375 @@ const PieChart = () => {
 
 export default PieChart;
 
+===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\components\FollowUpReminders\FollowUpReminders.jsx =====
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
+import { leadService } from '../../services/leadService';
+import { useAuth } from '../../context/AuthContext';
+
+/**
+ * Global follow-up reminder.
+ * Mounted once in MainLayout, so it works on EVERY page (not only Follow-ups).
+ *
+ * - Loads this telecaller's leads that have a follow-up date (tcNextRefollowupDate)
+ * - When that date/time arrives -> popup + sound + browser notification
+ * - Also shows follow-ups that became due while the telecaller was away (last 24h)
+ * - Actions: Call Now (opens Call Panel and starts the call), Snooze 5 min, Dismiss
+ */
+
+const CHECK_EVERY_MS = 1000;             // compare "now" with due times every second (in-memory, very cheap)
+const REFRESH_EVERY_MS = 3 * 60 * 1000;  // how often we re-read follow-ups from the server
+const SNOOZE_MS = 5 * 60 * 1000;
+const OVERDUE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const MAX_VISIBLE = 3;
+
+// ─── helpers (same rules as Followups.jsx) ────────────────────────────────────
+const unwrapRows = (value) => {
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.data)) return value.data;
+  if (Array.isArray(value?.content)) return value.content;
+  if (Array.isArray(value?.items)) return value.items;
+  if (Array.isArray(value?.leads)) return value.leads;
+  if (Array.isArray(value?.data?.content)) return value.data.content;
+  return [];
+};
+
+const parseLeadNotes = (lead) => {
+  const raw = lead?.notes;
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+};
+
+const firstValue = (...values) =>
+  values.find((v) => v !== undefined && v !== null && String(v).trim() !== '');
+// same, but returns '' instead of undefined (so we never print the word "undefined")
+const textOf = (...values) => String(firstValue(...values) ?? '');
+
+// "2026-11-24T14:30" -> that local time. Date only ("2026-11-24") -> 09:00 local.
+const toDueDate = (raw) => {
+  if (!raw) return null;
+  const text = String(raw).trim();
+  const hasTime = /[T ]\d{1,2}:\d{2}/.test(text);
+  if (!hasTime) {
+    const m = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return null;
+    return { due: new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 9, 0, 0), hasTime: false };
+  }
+  const d = new Date(text);
+  return Number.isNaN(d.getTime()) ? null : { due: d, hasTime: true };
+};
+
+const mapLeadToReminder = (lead) => {
+  const rawDate = firstValue(
+    lead?.tcNextRefollowupDate, lead?.nextFollowupDate, lead?.followUpDate, lead?.followupDate
+  );
+  const parsed = toDueDate(rawDate);
+  if (!parsed) return null;
+
+  const notes = parseLeadNotes(lead);
+  const fuStatus = String(notes.TC_NEXT_FOLLOWUP_STATUS || '');
+  // Already handled -> never remind
+  if (['Completed', 'Missed', 'Cancelled'].includes(fuStatus)) return null;
+
+  const leadKey = String(firstValue(lead?.leadId, lead?.businessLeadId, lead?.id, lead?._id, ''));
+  if (!leadKey) return null;
+
+  return {
+    key: `${leadKey}|${String(rawDate).trim()}`,   // changes when the follow-up is rescheduled
+    leadId: leadKey,
+    rawLead: lead,
+    organization: textOf(lead?.organization, lead?.schoolName, lead?.school, lead?.name) || 'Unknown organization',
+    contactPerson: textOf(lead?.contactPerson, lead?.contactName),
+    mobile: textOf(lead?.mobile, lead?.phoneNumber, lead?.phone),
+    note: textOf(notes.TC_NEXT_FOLLOWUP_NOTE, notes.tcNextRefollowupNote, lead?.tcNextRefollowupNote, lead?.followupNote),
+    due: parsed.due,
+    hasTime: parsed.hasTime,
+  };
+};
+
+const fmtDue = (r) => {
+  const date = r.due.toLocaleDateString([], { day: '2-digit', month: 'short' });
+  return r.hasTime ? `${date}, ${r.due.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : date;
+};
+
+const dueLabel = (r, now) => {
+  const mins = Math.floor((now - r.due.getTime()) / 60000);
+  if (mins < 2) return 'Due now';
+  if (mins < 60) return `Overdue by ${mins} min`;
+  const hrs = Math.floor(mins / 60);
+  return `Overdue by ${hrs} hr${hrs > 1 ? 's' : ''}`;
+};
+
+// ─── sound + browser notification ─────────────────────────────────────────────
+const beep = () => {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    [0, 0.35].forEach((offset) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime + offset);
+      gain.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + offset + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + offset + 0.3);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(ctx.currentTime + offset);
+      osc.stop(ctx.currentTime + offset + 0.32);
+    });
+    setTimeout(() => ctx.close?.(), 1500);
+  } catch { /* autoplay blocked - popup still shows */ }
+};
+
+const browserNotify = (r) => {
+  try {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    const n = new Notification('⏰ Follow-up due: ' + r.organization, {
+      body: [r.contactPerson, r.mobile, r.note].filter(Boolean).join(' · '),
+      tag: r.key,
+      requireInteraction: true,
+    });
+    n.onclick = () => { window.focus(); n.close(); };
+  } catch { /* ignore */ }
+};
+
+// ─── component ────────────────────────────────────────────────────────────────
+const FollowUpReminders = ({ onNavigate }) => {
+  const { user } = useAuth();
+  const storeKey = `fu-reminders-ack:${user?.username || 'me'}`;
+
+  const [popups, setPopups] = useState([]);      // reminders currently shown
+  const [now, setNow] = useState(Date.now());
+
+  const itemsRef = useRef([]);                    // all pending follow-ups
+  const shownRef = useRef(new Set());             // keys already popped up this session
+  const snoozedRef = useRef(new Map());           // key -> timestamp when to show again
+  const loadingRef = useRef(false);
+
+  const readAcked = useCallback(() => {
+    try { return new Set(JSON.parse(localStorage.getItem(storeKey) || '[]')); }
+    catch { return new Set(); }
+  }, [storeKey]);
+
+  const ack = useCallback((key) => {
+    try {
+      const set = readAcked();
+      set.add(key);
+      localStorage.setItem(storeKey, JSON.stringify([...set].slice(-500)));
+    } catch { /* ignore */ }
+  }, [readAcked, storeKey]);
+
+  // ── load follow-ups from the server (same API the Follow-ups page uses) ─────
+  const load = useCallback(async () => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
+    try {
+      const districts = unwrapRows(await leadService.getMyDistricts());
+      const responses = await Promise.all(
+        districts.map((item) => {
+          const d = typeof item === 'string' ? item : (item?.district || item?.name || item?.districtName);
+          return d ? leadService.getMyLeadsByDistrict(d).catch(() => []) : Promise.resolve([]);
+        })
+      );
+      const list = responses.flatMap(unwrapRows).map(mapLeadToReminder).filter(Boolean);
+      itemsRef.current = list;
+      const upcoming = list.filter((r) => r.due.getTime() > Date.now()).sort((a, b) => a.due - b.due)[0];
+      console.info(`[FollowUpReminders] loaded ${list.length} pending follow-ups` + (upcoming ? `, next: ${upcoming.organization} at ${upcoming.due.toLocaleString()}` : ''));
+
+      // drop popups for follow-ups that were completed / rescheduled / removed meanwhile
+      const alive = new Set(list.map((r) => r.key));
+      setPopups((cur) => cur.filter((p) => alive.has(p.key)));
+    } catch (error) {
+      /* offline / not a telecaller -> try again next cycle */
+      console.warn('[FollowUpReminders] could not load follow-ups:', error?.message || error);
+    } finally {
+      loadingRef.current = false;
+    }
+  }, []);
+
+  // ── compare "now" with due times ────────────────────────────────────────────
+  const check = useCallback(() => {
+    const t = Date.now();
+    setNow(t);
+    const acked = readAcked();
+    const fresh = [];
+
+    itemsRef.current.forEach((r) => {
+      const dueMs = r.due.getTime();
+      if (dueMs > t) return;                                   // not yet
+      if (t - dueMs > OVERDUE_WINDOW_MS) return;               // too old
+      if (acked.has(r.key)) return;                            // already handled
+      const snoozeUntil = snoozedRef.current.get(r.key);
+      if (snoozeUntil && snoozeUntil > t) return;              // snoozed
+      if (shownRef.current.has(r.key)) return;                 // already on screen
+      shownRef.current.add(r.key);
+      fresh.push(r);
+    });
+
+    if (fresh.length) {
+      fresh.sort((a, b) => a.due - b.due);
+      setPopups((cur) => [...cur, ...fresh]);
+      beep();
+      fresh.forEach(browserNotify);
+    }
+  }, [readAcked]);
+
+  useEffect(() => {
+    // ask once for desktop-notification permission (needed when the tab is in background)
+    try {
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+      }
+    } catch { /* ignore */ }
+
+    load().then(check);
+
+    // Ticker. Browsers slow down setInterval in background tabs (to ~1 per minute),
+    // which made reminders late. A Web Worker is not throttled, so it drives the clock;
+    // setInterval stays as a fallback.
+    let worker = null;
+    let checkTimer = null;
+    try {
+      const blob = new Blob(
+        [`setInterval(function(){ postMessage(1); }, ${CHECK_EVERY_MS});`],
+        { type: 'application/javascript' }
+      );
+      worker = new Worker(URL.createObjectURL(blob));
+      worker.onmessage = () => check();
+    } catch {
+      checkTimer = setInterval(check, CHECK_EVERY_MS);
+    }
+
+    const loadTimer = setInterval(load, REFRESH_EVERY_MS);
+    const onFocus = () => { load().then(check); };
+    const onVisible = () => { if (!document.hidden) check(); };
+    // Fired by leadService.updateLead -> a follow-up was just created / rescheduled
+    const onChanged = () => { load().then(check); };
+
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('followups-changed', onChanged);
+    return () => {
+      if (worker) worker.terminate();
+      if (checkTimer) clearInterval(checkTimer);
+      clearInterval(loadTimer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('followups-changed', onChanged);
+    };
+  }, [load, check]);
+
+  // Test helper: open the browser console on ANY page and run  testFollowUpReminder()
+  useEffect(() => {
+    window.testFollowUpReminder = () => {
+      const due = new Date();
+      const r = {
+        key: `test|${Date.now()}`, leadId: 'TEST', rawLead: null,
+        organization: 'Test School (reminder check)', contactPerson: 'Test Contact', mobile: '9876543210',
+        note: 'This is a test follow-up reminder.', due, hasTime: true,
+      };
+      setPopups((cur) => [...cur, r]);
+      beep();
+    };
+    return () => { delete window.testFollowUpReminder; };
+  }, []);
+
+  // ── actions ────────────────────────────────────────────────────────────────
+  const remove = (key) => setPopups((cur) => cur.filter((p) => p.key !== key));
+
+  const dismiss = (r) => { ack(r.key); remove(r.key); };
+
+  const snooze = (r) => {
+    snoozedRef.current.set(r.key, Date.now() + SNOOZE_MS);
+    shownRef.current.delete(r.key);   // allowed to pop up again after the snooze
+    remove(r.key);
+  };
+
+  const callNow = (r) => {
+    ack(r.key);
+    remove(r.key);
+    if (onNavigate) {
+      onNavigate('callpanel', {
+        state: { lead: r.rawLead, leadId: r.leadId, phone: r.mobile, name: r.organization, action: 'startCall' },
+      });
+    }
+  };
+
+  if (!popups.length) return null;
+
+  const visible = popups.slice(0, MAX_VISIBLE);
+  const hidden = popups.length - visible.length;
+
+  return createPortal(
+    <div
+      role="alert"
+      aria-live="assertive"
+      style={{ position: 'fixed', top: 16, right: 16, zIndex: 10000, display: 'flex', flexDirection: 'column', gap: 12, width: 340, maxWidth: 'calc(100vw - 32px)' }}
+    >
+      {visible.map((r) => (
+        <div
+          key={r.key}
+          style={{ background: '#fff', borderRadius: 12, borderLeft: '5px solid #7b1113', boxShadow: '0 10px 30px rgba(0,0,0,.22)', padding: 14, animation: 'fuPopIn .25s ease-out' }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <strong style={{ color: '#7b1113', fontSize: 13 }}>⏰ Follow-up reminder</strong>
+            <span style={{ fontSize: 11, fontWeight: 700, color: '#b91c1c', background: '#fee2e2', borderRadius: 999, padding: '2px 8px' }}>
+              {dueLabel(r, now)}
+            </span>
+          </div>
+
+          <div style={{ fontWeight: 700, fontSize: 15, color: '#111827' }}>{r.organization}</div>
+          <div style={{ fontSize: 12.5, color: '#4b5563', marginTop: 2 }}>
+            {[r.contactPerson, r.mobile && `☎ ${r.mobile}`].filter(Boolean).join(' · ') || '--'}
+          </div>
+          <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>Scheduled: {fmtDue(r)}</div>
+          {r.note && (
+            <div style={{ fontSize: 12.5, color: '#374151', background: '#f9fafb', borderRadius: 8, padding: '6px 8px', marginTop: 8, maxHeight: 64, overflow: 'auto' }}>
+              {r.note}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button
+              onClick={() => callNow(r)}
+              style={{ flex: 1.3, padding: '8px 0', border: 'none', borderRadius: 8, background: '#7b1113', color: '#fff', fontWeight: 700, cursor: 'pointer' }}
+            >📞 Call Now</button>
+            <button
+              onClick={() => snooze(r)}
+              style={{ flex: 1, padding: '8px 0', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', fontSize: 12.5 }}
+            >Snooze 5m</button>
+            <button
+              onClick={() => dismiss(r)}
+              style={{ flex: 0.8, padding: '8px 0', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', fontSize: 12.5 }}
+            >Dismiss</button>
+          </div>
+        </div>
+      ))}
+
+      {hidden > 0 && (
+        <div style={{ textAlign: 'center', fontSize: 12, fontWeight: 600, color: '#fff', background: '#7b1113', borderRadius: 999, padding: '4px 10px', alignSelf: 'center' }}>
+          +{hidden} more follow-up{hidden > 1 ? 's' : ''} due
+        </div>
+      )}
+
+      <style>{`@keyframes fuPopIn { from { transform: translateX(30px); opacity: 0 } to { transform: none; opacity: 1 } }`}</style>
+    </div>,
+    document.body
+  );
+};
+
+export default FollowUpReminders;
+
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\components\Invoice\InvoiceDefaults.js =====
 // Default text shown on every invoice until the Super Admin edits it.
 export const INVOICE_DEFAULTS = {
@@ -6102,7 +6484,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import { FiDownload, FiPlus, FiSave, FiTrash2, FiX } from 'react-icons/fi';
 
 import InvoiceTemplate from './InvoiceTemplate';
-import { INVOICE_DEFAULTS, TEXT_KEYS } from './invoiceDefaults';
+import { INVOICE_DEFAULTS, TEXT_KEYS } from './InvoiceDefaults';
 import paymentAdminService from '../../services/paymentAdminService';
 import invoiceAssetService from '../../services/invoiceAssetService';
 
@@ -6490,7 +6872,7 @@ export default function InvoiceEditorModal({ payment, onClose, onPrint, onSaved 
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\components\Invoice\InvoiceTemplate.jsx =====
 import React from 'react';
 import './InvoiceTemplate.css';
-import { INVOICE_DEFAULTS } from './invoiceDefaults';
+import { INVOICE_DEFAULTS } from './InvoiceDefaults';
 
 const money = (value) =>
   Number(value || 0).toLocaleString('en-IN', {
@@ -8740,6 +9122,7 @@ export const WebSocketProvider = ({ children }) => {
 import React, { useState } from "react";
 import Sidebar from "../components/Sidebar/Sidebar";
 import Navbar from "../components/Navbar/Navbar";
+import FollowUpReminders from "../components/FollowUpReminders/FollowUpReminders";
 import "./MainLayout.css";
 
 const MainLayout = ({ children, activePage, onNavigate }) => {
@@ -8757,6 +9140,9 @@ const MainLayout = ({ children, activePage, onNavigate }) => {
         <Navbar toggleSidebar={() => setCollapsed(!collapsed)} />
         <div className="page-content">{children}</div>
       </div>
+
+      {/* Pops up when a scheduled follow-up date/time arrives (works on every page) */}
+      <FollowUpReminders onNavigate={onNavigate} />
     </div>
   );
 };
@@ -14417,7 +14803,97 @@ const OutcomeModal = ({ lead, onClose, onSave, loading }) => {
 };
 
 // ─── Main Component ────────────────────────────────────────────────────────────
-const CallPanel = ({ onNavigate, isMobile = false }) => {
+// ─── Dialpad / Keyboard Modal ─────────────────────────────────────────────────
+// Lets the telecaller dial ANY number: tap the keypad, type on the physical
+// keyboard, or paste. Press Enter (or the Call button) to place the call.
+const DialpadModal = ({ onClose, onDial, canCall, busy }) => {
+  const [num, setNum] = useState('');
+  const inputRef = useRef(null);
+  const keys = [
+    ['1',''],['2','ABC'],['3','DEF'],['4','GHI'],['5','JKL'],['6','MNO'],
+    ['7','PQRS'],['8','TUV'],['9','WXYZ'],['*',''],['0','+'],['#',''],
+  ];
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  // keep only characters a phone number can contain
+  const clean = (v) => String(v || '').replace(/[^0-9+*#]/g, '');
+  const digitCount = num.replace(/\D/g, '').length;
+  const valid = digitCount >= 5;
+
+  const submit = () => {
+    if (!canCall || busy || !valid) return;
+    onDial(num);
+  };
+
+  const press = (k) => { setNum(n => n + k); inputRef.current?.focus(); };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{position:'fixed',inset:0,background:'rgba(0,0,0,.45)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999}}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{background:'#fff',borderRadius:16,width:320,maxWidth:'92vw',padding:20,boxShadow:'0 20px 50px rgba(0,0,0,.25)'}}
+      >
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+          <strong style={{fontSize:16}}>⌨ Dial a Number</strong>
+          <button onClick={onClose} style={{border:'none',background:'transparent',fontSize:18,cursor:'pointer'}}>✕</button>
+        </div>
+
+        <input
+          ref={inputRef}
+          type="tel"
+          inputMode="tel"
+          autoComplete="off"
+          value={num}
+          placeholder="Type or paste number"
+          onChange={e => setNum(clean(e.target.value))}
+          onKeyDown={e => {
+            if (e.key === 'Enter') { e.preventDefault(); submit(); }
+            if (e.key === 'Escape') onClose();
+          }}
+          style={{width:'100%',boxSizing:'border-box',padding:'12px 14px',fontSize:22,letterSpacing:1,textAlign:'center',border:'1px solid #e5e7eb',borderRadius:10,marginBottom:12}}
+        />
+
+        <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}}>
+          {keys.map(([k, sub]) => (
+            <button
+              key={k}
+              onClick={() => press(k)}
+              style={{padding:'10px 0',border:'1px solid #e5e7eb',borderRadius:10,background:'#f9fafb',cursor:'pointer',fontSize:20,fontWeight:600,lineHeight:1.1}}
+            >
+              {k}
+              <div style={{fontSize:9,color:'#9ca3af',fontWeight:500,minHeight:11}}>{sub}</div>
+            </button>
+          ))}
+        </div>
+
+        <div style={{display:'flex',gap:8,marginTop:12}}>
+          <button
+            onClick={() => setNum(n => n.slice(0, -1))}
+            onDoubleClick={() => setNum('')}
+            title="Backspace (double-click to clear)"
+            style={{flex:'0 0 64px',padding:'12px 0',border:'1px solid #e5e7eb',borderRadius:10,background:'#fff',cursor:'pointer',fontSize:18}}
+          >⌫</button>
+          <button
+            onClick={submit}
+            disabled={!canCall || busy || !valid}
+            style={{flex:1,padding:'12px 0',border:'none',borderRadius:10,fontWeight:700,fontSize:15,color:'#fff',
+              background: (!canCall || busy || !valid) ? '#cbd5e1' : '#7b1113',
+              cursor: (!canCall || busy || !valid) ? 'not-allowed' : 'pointer'}}
+          >📞 Call</button>
+        </div>
+
+        {!canCall && <p style={{color:'#b91c1c',fontSize:12,margin:'10px 0 0'}}>Status must be Available to make calls.</p>}
+        {busy && <p style={{color:'#b45309',fontSize:12,margin:'10px 0 0'}}>A call is already in progress. End it first.</p>}
+      </div>
+    </div>
+  );
+};
+
+const CallPanel = ({ onNavigate, isMobile = false, navigationState = null }) => {
   const { user } = useAuth();
   const [queue, setQueue] = useState([]);
   const [activeLead, setActiveLead] = useState(null);
@@ -14443,6 +14919,9 @@ const CallPanel = ({ onNavigate, isMobile = false }) => {
   const [callStats, setCallStats] = useState({ totalCalls: 0, answered: 0, notAnswered: 0, interested: 0, notInterested: 0, talkSecs: 0 });
   const [toast, setToast] = useState(null);
   const [showCallInit, setShowCallInit] = useState(false);
+  const [showDialpad, setShowDialpad] = useState(false);
+  const [dialedNumber, setDialedNumber] = useState('');   // number typed on the dialpad (manual call)
+  const manualCallRef = useRef('');                      // non-empty while a manual dialpad call is in flight
   const [showOutcome, setShowOutcome] = useState(false);
   const [callHistory, setCallHistory] = useState([]);
   const [followUps, setFollowUps] = useState([]);
@@ -14481,7 +14960,7 @@ const CallPanel = ({ onNavigate, isMobile = false }) => {
   applyStatusRef.current = (cmd) => {
     if (!cmd || !cmd.status) return;
     const st = String(cmd.status).toUpperCase();
-    const leadName = activeLead?.name || 'Lead';
+    const leadName = manualCallRef.current || activeLead?.name || 'Lead';
     const duration = Number(cmd.duration) || 0;
     const changed = lastSeenStatusRef.current !== st;
     lastSeenStatusRef.current = st;
@@ -14527,7 +15006,9 @@ const CallPanel = ({ onNavigate, isMobile = false }) => {
     setCurrentCallId(null);
     wasConnectedRef.current = false;
 
-    if (activeLead) setEndedLeadId(activeLead.id || activeLead._id);
+    // A manual dialpad call is not tied to the selected lead.
+    if (activeLead && !manualCallRef.current) setEndedLeadId(activeLead.id || activeLead._id);
+    manualCallRef.current = '';
 
     setTodaySummary(prev => ({
       ...prev,
@@ -14824,7 +15305,10 @@ const CallPanel = ({ onNavigate, isMobile = false }) => {
   }, [idleCountdown]);
 
   
-const makeCall = async (number) => {
+const makeCall = async (number, { manual = false, lead: forcedLead = null } = {}) => {
+  // forcedLead: used when the call is started from another page (e.g. Demo) before React has
+  // finished selecting the lead.
+  const leadForCall = forcedLead || activeLead;
   if (!canAgentCall()) {
     showToast(
       'You are not available to make calls. Please change status to Available.',
@@ -14845,12 +15329,16 @@ const makeCall = async (number) => {
     setElapsed(0);
     wasConnectedRef.current = false;
     lastSeenStatusRef.current = '';
+    manualCallRef.current = manual ? number : '';
+    // show the dialled number when it is not the lead's own primary number (manual dial / Demo contact)
+    const sameAsLead = String(number).replace(/\D/g, '').slice(-10) === String(leadForCall?.mobile || '').replace(/\D/g, '').slice(-10);
+    setDialedNumber(manual || (forcedLead && !sameAsLead) ? number : '');
 
     // The backend takes the telecaller from the login token, so the call always goes to
     // THIS telecaller's own Windows companion.
     const result = await localSimCallService.call({
-      leadId: getBusinessLeadId(activeLead),
-      leadName: activeLead?.name || 'Unknown',
+      leadId: manual ? '' : getBusinessLeadId(leadForCall),
+      leadName: manual ? 'Manual dial' : (leadForCall?.name || 'Unknown'),
       leadMobile: number,
     });
 
@@ -14859,7 +15347,7 @@ const makeCall = async (number) => {
     }
     setCurrentCallId(result.requestId);
 
-    showToast(`Calling ${activeLead?.name || number} from your phone...`, 'info');
+    showToast(`Calling ${manual ? number : (leadForCall?.name || number)} from your phone...`, 'info');
   } catch (error) {
     console.error('Local SIM call request failed:', error);
 
@@ -14871,7 +15359,27 @@ const makeCall = async (number) => {
     setCallState('idle');
     setIsCallActive(false);
     setCurrentCallId(null);
+    manualCallRef.current = '';
   }
+};
+
+// Dial any number typed/pasted on the dialpad (works with or without a selected lead)
+const handleDialpadCall = async (rawNumber) => {
+  if (!canAgentCall()) {
+    showToast('You are not available to make calls. Please change status to Available.', 'error');
+    return;
+  }
+  if (callState !== 'idle') {
+    showToast('A call is already in progress. End it before dialing a new number.', 'error');
+    return;
+  }
+  const number = String(rawNumber || '').replace(/[^0-9+*#]/g, '');
+  if (number.replace(/\D/g, '').length < 5) {
+    showToast('Enter a valid phone number.', 'error');
+    return;
+  }
+  setShowDialpad(false);
+  await makeCall(number, { manual: true });
 };
 
 
@@ -14896,6 +15404,7 @@ const makeCall = async (number) => {
       showToast('Cannot start call. Agent status is not Available.', 'error');
       return;
     }
+    setDialedNumber('');
     clearInterval(idleRef.current);
     setIdleCountdown(null);
     setActiveLead(lead);
@@ -14911,6 +15420,7 @@ const makeCall = async (number) => {
   };
 
   const selectLeadForPanel = (lead) => {
+    if (callState === 'idle') setDialedNumber('');
     setActiveLead(lead);
     setLeadStatus(lead.status || 'New');
     setDetailTab('Customer Details');
@@ -14920,6 +15430,50 @@ const makeCall = async (number) => {
     setFollowUpNote(getReadableFollowupNote(lead) === 'Follow-up scheduled' ? '' : getReadableFollowupNote(lead));
     setNotes(''); // editor is for the next UP entry, not the imported JSON payload
   };
+
+
+  // Opened from Follow-ups / Leads with { lead, action }: select THAT lead (and start the call).
+  const handledNavRef = useRef(null);
+  useEffect(() => {
+    const target = navigationState?.lead;
+    if (!target || handledNavRef.current === navigationState) return;
+    if (loading && queue.length === 0) return; // wait for the first lead load
+    handledNavRef.current = navigationState;
+
+    const wanted = [navigationState.leadId, target.leadId, target.businessLeadId, target._id, target.id]
+      .filter(Boolean).map(String);
+    const sameLead = (l) => [getBusinessLeadId(l), l.leadId, l.businessLeadId, l._id, l.id]
+      .filter(Boolean).map(String).some(k => wanted.includes(k));
+
+    const openLead = (lead) => {
+      setQueueSegment(getQueueGroup(lead));
+      selectLeadForPanel(lead);
+      if (navigationState.action === 'startCall') startCall(lead);
+      // From the Demo page: open this lead and dial THAT number straight away.
+      if (navigationState.action === 'callNumber' && navigationState.phone) {
+        if (callState !== 'idle') showToast('A call is already in progress. End it before starting a new call.', 'error');
+        else makeCall(navigationState.phone, { lead });
+      }
+    };
+
+    const found = queue.find(sameLead);
+    if (found) { openLead(found); return; }
+
+    // Not in the loaded queue (e.g. beyond the first 500) -> fetch it by business leadId.
+    (async () => {
+      try {
+        const businessId = getBusinessLeadId(target) || wanted[0];
+        const fresh = await leadService.getLead(businessId);
+        const lead = normalizeLead(fresh);
+        setQueue(current => current.some(sameLead) ? current : [lead, ...current]);
+        openLead(lead);
+      } catch (error) {
+        // Demo call: the lead could not be fetched -> still dial the demo's number
+        if (navigationState.action === 'callNumber' && navigationState.phone) { openLead(normalizeLead(target)); return; }
+        showToast(`Could not open that lead: ${error?.message || 'Please try again.'}`, 'error');
+      }
+    })();
+  }, [navigationState, queue, loading]);
 
   const handleInitiateCall = async (number) => {
     if (!canAgentCall()) {
@@ -15207,7 +15761,7 @@ const makeCall = async (number) => {
   }, []);
 
   const handleCopyMobile = () => {
-    navigator.clipboard?.writeText(activeLead?.mobile || '').catch(()=>{});
+    navigator.clipboard?.writeText(dialedNumber || activeLead?.mobile || '').catch(()=>{});
     showToast('📋 Mobile number copied!');
   };
 
@@ -15322,18 +15876,19 @@ const makeCall = async (number) => {
               <Avatar initials={activeLead?.initials} name={activeLead?.name || 'Lead'} size={52} />
               <h3>{activeLead?.name || 'No lead selected'}</h3>
               <span>{activeLead?.contactPerson || '--'}</span>
-              <span>☎ {activeLead?.mobile || 'No number'}</span>
+              <span>☎ {dialedNumber ? `${dialedNumber} (manual dial)` : (activeLead?.mobile || 'No number')}</span>
               <strong className={callState === 'connected' ? 'connected' : ''}><i></i>{callState === 'connected' ? 'CONNECTED' : callState === 'ringing' ? 'RINGING' : callState === 'connecting' ? 'REQUEST PENDING' : 'READY'}</strong>
               <div className="ref-active-timer">{fmtTime(elapsed)}</div>
             </div>
             <div className="ref-call-controls">
               <button onClick={handleMute} disabled={!canControl || controlBusy}>{isMuted ? <MicOff size={18}/> : <Mic size={18}/>}<span>{isMuted ? 'Unmute' : 'Mute'}</span></button>
               <button onClick={handleHold} disabled={!canControl || controlBusy}>{callState === 'onhold' ? <Play size={18}/> : <Pause size={18}/>}<span>{callState === 'onhold' ? 'Resume' : 'Phone Hold'}</span></button>
+              <button onClick={() => setShowDialpad(true)} disabled={!canAgentCall()} title="Dial any number"><Phone size={18}/><span>Dialpad</span></button>
               <button className="end" onClick={finaliseCall} disabled={callState === 'idle'}><PhoneOff size={18}/><span>End Call</span></button>
             </div>
           </div>
           <div className="ref-recording"><span><i></i> REC</span><span>Not recording (recording integration unavailable)</span><button disabled>Recording unavailable</button></div>
-          <div className="ref-current-number"><span>☎</span><div><small>Current Number</small><strong>{activeLead?.mobile || '--'}</strong></div><button onClick={handleCopyMobile}>⧉</button></div>
+          <div className="ref-current-number"><span>☎</span><div><small>Current Number</small><strong>{dialedNumber || activeLead?.mobile || '--'}</strong></div><button onClick={handleCopyMobile}>⧉</button></div>
         </section>
 
         <section className="ref-card ref-disposition-card">
@@ -15425,6 +15980,15 @@ const makeCall = async (number) => {
         </div>
       </section>
 
+      {showDialpad && (
+        <DialpadModal
+          onClose={() => setShowDialpad(false)}
+          onDial={handleDialpadCall}
+          canCall={canAgentCall()}
+          busy={callState !== 'idle'}
+        />
+      )}
+
       {showCallInit && (
         <CallInitiationModal
           lead={activeLead}
@@ -15442,7 +16006,6 @@ const makeCall = async (number) => {
 };
 
 export default CallPanel;
-
 
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\pages\Categories\Categories.jsx =====
 import React from "react";
@@ -18548,13 +19111,13 @@ const StatusPill = ({ status }) => {
 }; 
  
 // ─── Join / Meeting Button ──────────────────────────────────────────────────── 
-const MeetBtn = ({ demo }) => { 
+const MeetBtn = ({ demo, onCall }) => { 
   if (demo.status === 'Cancelled') return null; 
   if (demo.meetType === 'phone') { 
     return ( 
-      <a href={`tel:${demo.phone}`} className="dm-join-btn"> 
-        <FiPhone size={12}/> Call 
-      </a> 
+      <button type="button" className="dm-join-btn" style={{ cursor: 'pointer', border: 'none' }} onClick={() => onCall && onCall(demo)}>
+        <FiPhone size={12}/> Call
+      </button>
     ); 
   } 
   if (demo.meetType === 'office') { 
@@ -18960,7 +19523,7 @@ const DemoViewModal = ({ demo, onClose, onEdit }) => {
 }; 
  
 // ─── Main Demo Page ─────────────────────────────────────────────────────────── 
-const Demo = () => { 
+const Demo = ({ onNavigate }) => { 
   const [demos, setDemos]         = useState([]); 
   const [leads, setLeads]         = useState([]); 
   const [loading, setLoading]     = useState(true); 
@@ -19160,7 +19723,19 @@ const Demo = () => {
     showToast('Meet link copied!', 'info'); 
   }; 
  
-  const handleCall = (demo) => { const { phone } = getContactOverride(demo); if (!phone) { showToast('No phone number available for this lead.', 'error'); return; } window.open(`tel:${String(phone).replace(/[^0-9+]/g, '')}`, '_self'); }; 
+  // Call button -> open the Call Panel for THIS lead and dial THIS demo's number from the
+  // paired phone (no more tel: link that opens the PC's dialer).
+  const handleCall = (demo) => {
+    const { phone } = getContactOverride(demo);
+    const number = String(phone || '').replace(/[^0-9+]/g, '');
+    if (!number) { showToast('No phone number available for this lead.', 'error'); return; }
+    if (!onNavigate) { window.open(`tel:${number}`, '_self'); return; }   // safety fallback
+    const lead = leads.find(l => String(l.leadId) === String(demo.leadId))
+      || { leadId: demo.leadId, name: demo.organization, contactPerson: demo.contactPerson, mobile: number };
+    onNavigate('callpanel', {
+      state: { lead, leadId: demo.leadId, phone: number, name: demo.organization, action: 'callNumber' },
+    });
+  }; 
  
 
   const handleExport = () => {
@@ -19367,7 +19942,7 @@ const Demo = () => {
                   </td> 
                  
                   <td> 
-                    <MeetBtn demo={demo} /> 
+                    <MeetBtn demo={demo} onCall={handleCall} /> 
                   </td> 
                   <td> 
                     <StatusPill status={demo.status} /> 
@@ -19476,10 +20051,10 @@ const Demo = () => {
   ); 
 }; 
  
-export default Demo; 
+export default Demo;
 
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\pages\Followups\Followups.jsx =====
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { api } from '../../services/api';
 import { leadService } from '../../services/leadService';
 import './Followups.css';
@@ -19710,7 +20285,7 @@ const Modal = ({ show, title, onClose, children, wide }) => {
 };
 
 // ─── Follow-Up Form ─────────────────────────────────────────────────────────────
-const FollowUpForm = ({ initial, onSave, onClose }) => {
+const FollowUpForm = ({ initial, onSave, onClose, leads = [] }) => {
   const [form, setForm] = useState(initial || {
     organization: '', contactPerson: '', mobile: '', email: '', campaign: 'School ERP',
     type: 'Call Back', date: '', time: '', note: '',
@@ -19718,26 +20293,78 @@ const FollowUpForm = ({ initial, onSave, onClose }) => {
   });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
+  // ADD mode only: pick an existing lead (a follow-up is stored on a lead)
+  const isAdd = !initial;
+  const [leadSearch, setLeadSearch] = useState('');
+  const keyOf = l => String(firstValue(l?.leadId, l?.businessLeadId, l?.id, l?._id, '') || '');
+  const nameOf = l => String(firstValue(l?.organization, l?.schoolName, l?.school, l?.name, 'Unknown') || 'Unknown');
+  const mobileOf = l => String(firstValue(l?.mobile, l?.phoneNumber, l?.phone, '') || '');
+  const matches = useMemo(() => {
+    const q = leadSearch.trim().toLowerCase();
+    const list = q
+      ? leads.filter(l => `${nameOf(l)} ${mobileOf(l)} ${firstValue(l?.contactPerson, '') || ''}`.toLowerCase().includes(q))
+      : leads;
+    return list.slice(0, 50);
+  }, [leads, leadSearch]);
+  const pickLead = key => {
+    const lead = leads.find(l => keyOf(l) === key);
+    if (!lead) { setForm(f => ({ ...f, leadKey: '' })); return; }
+    setForm(f => ({
+      ...f,
+      leadKey: key,
+      organization: nameOf(lead),
+      contactPerson: String(firstValue(lead.contactPerson, lead.contactName, '') || ''),
+      mobile: mobileOf(lead),
+      email: String(firstValue(lead.email, '') || ''),
+    }));
+  };
+  const locked = isAdd && !!form.leadKey;
+
   return (
     <div className="fu-lead-form">
+      {isAdd && (
+        <div className="fu-form-group" style={{ marginBottom: 12 }}>
+          <label>Select Lead *</label>
+          <input
+            type="text"
+            value={leadSearch}
+            onChange={e => setLeadSearch(e.target.value)}
+            placeholder="Search by organization, contact or mobile…"
+          />
+          <select
+            size={5}
+            value={form.leadKey || ''}
+            onChange={e => pickLead(e.target.value)}
+            style={{ width: '100%', marginTop: 6 }}
+          >
+            {matches.length === 0 && <option value="" disabled>No leads found</option>}
+            {matches.map(l => (
+              <option key={keyOf(l)} value={keyOf(l)}>
+                {nameOf(l)} — {mobileOf(l) || 'no number'}
+              </option>
+            ))}
+          </select>
+          {!form.leadKey && <small style={{ color: '#b45309' }}>Select the lead this follow-up is for.</small>}
+        </div>
+      )}
       <div className="fu-form-row">
         <div className="fu-form-group">
           <label>Organization Name</label>
-          <input type="text" value={form.organization} onChange={e => set('organization', e.target.value)} placeholder="Organization Name" />
+          <input type="text" value={form.organization} readOnly={locked} onChange={e => set('organization', e.target.value)} placeholder="Organization Name" />
         </div>
         <div className="fu-form-group">
           <label>Contact Person</label>
-          <input type="text" value={form.contactPerson} onChange={e => set('contactPerson', e.target.value)} placeholder="Contact Person" />
+          <input type="text" value={form.contactPerson} readOnly={locked} onChange={e => set('contactPerson', e.target.value)} placeholder="Contact Person" />
         </div>
       </div>
       <div className="fu-form-row">
         <div className="fu-form-group">
           <label>Mobile</label>
-          <input type="tel" value={form.mobile} onChange={e => set('mobile', e.target.value)} placeholder="+91 XXXXX XXXXX" />
+          <input type="tel" value={form.mobile} readOnly={locked} onChange={e => set('mobile', e.target.value)} placeholder="+91 XXXXX XXXXX" />
         </div>
         <div className="fu-form-group">
           <label>Email</label>
-          <input type="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="email@example.com" />
+          <input type="email" value={form.email} readOnly={locked} onChange={e => set('email', e.target.value)} placeholder="email@example.com" />
         </div>
       </div>
       <div className="fu-form-row">
@@ -19916,7 +20543,9 @@ const mapLeadToFollowUp = (lead, calls = []) => {
     campaign: String(firstValue(lead?.campaign, lead?.district, excel.Campaign, excel.District, '--')),
     type: String(firstValue(latestCall?.outcome, status, 'Follow-Up Call')),
     date, time, note: String(note || 'Follow-up scheduled'),
-    status: ['Completed','Missed','Cancelled'].includes(String(status)) ? String(status) : 'Pending',
+    status: ['Completed','Missed','Cancelled'].includes(String(notes.TC_NEXT_FOLLOWUP_STATUS || ''))
+      ? String(notes.TC_NEXT_FOLLOWUP_STATUS)
+      : (['Completed','Missed','Cancelled'].includes(String(status)) ? String(status) : 'Pending'),
     priority: String(firstValue(lead?.priority, excel.Priority, 'Medium')),
     createdOn: firstValue(lead?.createdAt, latestCall?.createdAt, '--'),
     callStatus: String(firstValue(latestCall?.callStatus, '--')),
@@ -19951,6 +20580,7 @@ const FollowUps = ({ onNavigate }) => {
   const [viewFu, setViewFu]           = useState(null);
   const [toast, setToast]             = useState(null);
   const [activeTab, setActiveTab]     = useState('All');
+  const allLeadsRef = useRef([]);   // every lead of this telecaller (used to attach a NEW follow-up to a lead)
 
   const showToast = msg => {
     setToast(msg);
@@ -19979,6 +20609,7 @@ const FollowUps = ({ onNavigate }) => {
         })
       );
       const leads = leadResponses.flatMap(unwrapRows);
+      allLeadsRef.current = leads;
 
       // Existing backend mapping: GET /api/calls/agent
       const callResponse = await api.calls.getMyCalls();
@@ -19996,12 +20627,36 @@ const FollowUps = ({ onNavigate }) => {
   }, []);
   useEffect(() => { loadFollowUps(); }, [loadFollowUps]);
 
+  // The backend has no /followups API. A follow-up row is built from a Lead, so every
+  // change (status / date / note / delete) is saved on that Lead via PUT /api/leads/{leadId}.
+  const saveFollowUpToLead = async (fu, changes = {}) => {
+    const businessLeadId = fu?.leadId;
+    if (!businessLeadId) throw new Error('Business Lead ID is missing for this follow-up.');
+    const record = { ...parseLeadNotes(fu.rawLead) };
+    const payload = {};
+    if (changes.status !== undefined) record.TC_NEXT_FOLLOWUP_STATUS = changes.status;
+    if (changes.note !== undefined) record.TC_NEXT_FOLLOWUP_NOTE = changes.note;
+    if (changes.removeFollowUp) {
+      delete record.TC_NEXT_FOLLOWUP_NOTE;
+      delete record.TC_NEXT_FOLLOWUP_STATUS;
+      payload.tcNextRefollowupDate = '';
+    } else if (changes.date !== undefined) {
+      payload.tcNextRefollowupDate = changes.time ? `${changes.date}T${changes.time}` : changes.date;
+    }
+    payload.notes = JSON.stringify(record);
+    await leadService.updateLead(businessLeadId, payload);
+    return { notes: payload.notes, tcNextRefollowupDate: payload.tcNextRefollowupDate };
+  };
+
   const persistStatus = async (id, status) => {
+    const fu = followUps.find(item => item.id === id);
+    if (!fu) return;
     setSaving(true);
     try {
-      const updated = await api.followups.update(id, { status });
-      const row = updated?.data || updated || {};
-      setFollowUps(prev => prev.map(item => item.id === id ? { ...item, ...row, status } : item));
+      const saved = await saveFollowUpToLead(fu, { status });
+      setFollowUps(prev => prev.map(item => item.id === id
+        ? { ...item, status, rawLead: { ...item.rawLead, notes: saved.notes } }
+        : item));
       showToast(status === 'Completed' ? 'Marked as completed.' : 'Marked as missed.');
     } catch (error) { showToast(`Unable to update: ${error.message}`); }
     finally { setSaving(false); }
@@ -20058,17 +20713,57 @@ const FollowUps = ({ onNavigate }) => {
   const toggleRow     = id => setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
 
   // ─── CRUD ────────────────────────────────────────────────────────────────────
+  // The backend has NO /api/followups endpoint (that is why "Unable to schedule: No message
+  // available" appeared). A follow-up is stored ON THE LEAD (tcNextRefollowupDate + note), so a new
+  // follow-up = find the lead (by mobile, else organization name) and save the date on it.
+  const digitsOnly = v => String(v || '').replace(/\D/g, '');
+  const findLeadForForm = form => {
+    const leads = allLeadsRef.current || [];
+    const wantMobile = digitsOnly(form.mobile).slice(-10);
+    const wantOrg = String(form.organization || '').trim().toLowerCase();
+    const mobilesOf = lead => [lead?.mobile, lead?.mobile2, lead?.mobile3, lead?.phoneNumber, lead?.phone]
+      .map(v => digitsOnly(v).slice(-10)).filter(Boolean);
+    const orgOf = lead => String(firstValue(lead?.organization, lead?.schoolName, lead?.school, lead?.name, '') || '').trim().toLowerCase();
+
+    if (wantMobile.length >= 10) {
+      const byMobile = leads.find(l => mobilesOf(l).includes(wantMobile));
+      if (byMobile) return byMobile;
+    }
+    if (wantOrg) {
+      const exact = leads.filter(l => orgOf(l) === wantOrg);
+      if (exact.length === 1) return exact[0];
+      if (exact.length > 1 && wantMobile) return exact.find(l => mobilesOf(l).includes(wantMobile)) || null;
+    }
+    return null;
+  };
+
   const handleAdd = async form => {
+    if (!form.date) { showToast('Please select the follow-up date.'); return; }
+    if (!form.time) { showToast('Please select the follow-up time.'); return; }
+    if (!String(form.note || '').trim()) { showToast('Please enter a follow-up note.'); return; }
+    const when = new Date(`${form.date}T${form.time}`);
+    if (Number.isNaN(when.getTime())) { showToast('Please enter a valid date and time.'); return; }
+    if (form.status === 'Pending' && when.getTime() <= Date.now() - 60 * 1000) {
+      showToast('Follow-up date and time must be in the future.');
+      return;
+    }
+
+    const keyOfLead = l => String(firstValue(l?.leadId, l?.businessLeadId, l?.id, l?._id, '') || '');
+    const lead = (form.leadKey && (allLeadsRef.current || []).find(l => keyOfLead(l) === form.leadKey))
+      || findLeadForForm(form);
+    const businessLeadId = lead ? String(firstValue(lead.leadId, lead.businessLeadId, lead.id, lead._id, '') || '') : '';
+    if (!lead || !businessLeadId) {
+      showToast('Please select a lead from the list.');
+      return;
+    }
+
     setSaving(true);
     try {
-      const payload = { ...form, status: form.status || 'Pending' };
-      const response = await api.followups.create(payload);
-      const created = response?.data || response;
-      if (!created || !(created.id || created._id)) {
-        await loadFollowUps();
-      } else {
-        setFollowUps(prev => [{ ...payload, ...created, id: String(created.id ?? created._id) }, ...prev]);
-      }
+      await saveFollowUpToLead(
+        { leadId: businessLeadId, rawLead: lead },
+        { date: form.date, time: form.time, note: String(form.note).trim(), status: form.status || 'Pending' }
+      );
+      await loadFollowUps();
       setShowAdd(false);
       showToast('Follow-up scheduled successfully.');
     } catch (error) { showToast(`Unable to schedule: ${error.message}`); }
@@ -20079,9 +20774,12 @@ const FollowUps = ({ onNavigate }) => {
     if (!editFu?.id) return;
     setSaving(true);
     try {
-      const response = await api.followups.update(editFu.id, form);
-      const updated = response?.data || response || {};
-      setFollowUps(prev => prev.map(f => f.id === editFu.id ? { ...f, ...updated, ...form } : f));
+      const saved = await saveFollowUpToLead(editFu, {
+        date: form.date, time: form.time, note: form.note, status: form.status,
+      });
+      setFollowUps(prev => prev.map(f => f.id === editFu.id
+        ? { ...f, ...form, rawLead: { ...f.rawLead, notes: saved.notes, tcNextRefollowupDate: saved.tcNextRefollowupDate } }
+        : f));
       setEditFu(null);
       showToast('Follow-up updated successfully.');
     } catch (error) { showToast(`Unable to update: ${error.message}`); }
@@ -20092,7 +20790,8 @@ const FollowUps = ({ onNavigate }) => {
     if (!window.confirm('Delete this follow-up permanently?')) return;
     setSaving(true);
     try {
-      await api.followups.delete(id);
+      const fu = followUps.find(item => item.id === id);
+      await saveFollowUpToLead(fu, { removeFollowUp: true });
       setFollowUps(prev => prev.filter(f => f.id !== id));
       setSelected(s => s.filter(x => x !== id));
       showToast('Follow-up deleted.');
@@ -20107,7 +20806,10 @@ const FollowUps = ({ onNavigate }) => {
     if (!selected.length || !window.confirm(`Delete ${selected.length} follow-up(s)?`)) return;
     setSaving(true);
     try {
-      await Promise.all(selected.map(id => api.followups.delete(id)));
+      await Promise.all(selected.map(id => {
+        const fu = followUps.find(item => item.id === id);
+        return fu ? saveFollowUpToLead(fu, { removeFollowUp: true }) : Promise.resolve();
+      }));
       setFollowUps(prev => prev.filter(f => !selected.includes(f.id)));
       showToast(`Deleted ${selected.length} follow-up(s).`);
       setSelected([]);
@@ -20119,7 +20821,10 @@ const FollowUps = ({ onNavigate }) => {
     if (!selected.length) return;
     setSaving(true);
     try {
-      await Promise.all(selected.map(id => api.followups.update(id, { status: 'Completed' })));
+      await Promise.all(selected.map(id => {
+        const fu = followUps.find(item => item.id === id);
+        return fu ? saveFollowUpToLead(fu, { status: 'Completed' }) : Promise.resolve();
+      }));
       setFollowUps(prev => prev.map(f => selected.includes(f.id) ? { ...f, status: 'Completed' } : f));
       showToast(`Marked ${selected.length} as completed.`);
       setSelected([]);
@@ -20130,11 +20835,13 @@ const FollowUps = ({ onNavigate }) => {
   const handleCallNow = fu => {
     showToast(`📞 Calling ${fu.organization} (${fu.contactPerson || 'Contact'})…`);
     if (onNavigate) {
-      onNavigate('callpanel', { 
-        state: { 
-          lead: fu,
+      onNavigate('callpanel', {
+        state: {
+          lead: fu.rawLead || fu,
+          leadId: fu.leadId,
           phone: fu.mobile,
-          name: fu.organization
+          name: fu.organization,
+          action: 'startCall'
         }
       });
     } else {
@@ -20192,7 +20899,7 @@ const FollowUps = ({ onNavigate }) => {
 
       {/* ─── Modals ─── */}
       <Modal show={showAdd} title="Schedule New Follow-Up" onClose={() => setShowAdd(false)}>
-        <FollowUpForm onSave={handleAdd} onClose={() => setShowAdd(false)} />
+        <FollowUpForm leads={allLeadsRef.current} onSave={handleAdd} onClose={() => setShowAdd(false)} />
       </Modal>
 
       <Modal show={!!editFu} title="Edit Follow-Up" onClose={() => setEditFu(null)}>
@@ -27937,16 +28644,20 @@ export const leadService = {
   // ============================================================
 
   updateLead: (id, leadData) => {
-
+ 
     return apiCall(
       `/leads/${encodeURIComponent(id)}`,
       {
         method: 'PUT',
         body: JSON.stringify(leadData),
       }
-    );
+    ).then((result) => {
+      // tell the follow-up reminder that a follow-up date may have changed
+      try { window.dispatchEvent(new Event('followups-changed')); } catch { /* ignore */ }
+      return result;
+    });
   },
-
+ 
 
   // ============================================================
   // DELETE LEAD
@@ -28419,7 +29130,7 @@ export default {
 
 ===== D:\CRM Main\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app(telecallers)\crm-app\src\services\paymentAdminService.js =====
 // src/services/paymentAdminService.js
-const API_BASE = import.meta.env.VITE_API_BASE || 'https://crmbackend-5d2o.onrender.com/api';
+const API_BASE = import.meta.env.VITE_API_BASE || 'https://scanning-unused-dash.ngrok-free.dev/api';
 const getToken = () => localStorage.getItem('token');
 const authHeaders = (extra = {}) => {
   const token = getToken();

@@ -207,23 +207,24 @@ const Leads = ({ onNavigate }) => {
   // first UP column sits - so every update saved from the Call Panel gets its own column.
   const columns = useMemo(() => {
     const seen = new Set();
-    const base = [];
+    const base = [];          // real Excel columns uploaded by Super Admin (first-seen order)
+    const noteCols = [];      // columns created by the Call Panel (Legacy Note, TC_NEXT_FOLLOWUP_NOTE, ...)
     const upNumbers = new Set();
-    let upIndex = -1;
+    // Columns the telecaller's saves create - these must always sit at the END of the table.
+    const isUpdateColumn = name => /^(legacy\s*note|tc[_\s-]*next[_\s-]*followup[_\s-]*note|tc[_\s-]*next[_\s-]*refollowup[_\s-]*note)$/i.test(name);
     leads.forEach(lead => Object.keys(getLeadRecord(lead)).forEach(key => {
       const column = String(key ?? '').trim();
       if (!column) return;
       const n = upNumber(column);
-      if (n !== null) {
-        if (!upNumbers.has(n)) { upNumbers.add(n); if (upIndex === -1) upIndex = base.length; }
-        return;
-      }
+      if (n !== null) { upNumbers.add(n); return; }
       const normalized = column.toLowerCase();
-      if (!seen.has(normalized)) { seen.add(normalized); base.push(column); }
+      if (seen.has(normalized)) return;
+      seen.add(normalized);
+      (isUpdateColumn(column) ? noteCols : base).push(column);
     }));
-    if (upIndex === -1) return base;
     const upColumns = [...upNumbers].sort((a, b) => a - b).map(n => `UP${n}`);
-    return [...base.slice(0, upIndex), ...upColumns, ...base.slice(upIndex)];
+    // Excel columns first -> then call notes -> then UP1, UP2, ... (latest update last)
+    return [...base, ...noteCols, ...upColumns];
   }, [leads]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / rowsPerPage));
@@ -265,7 +266,7 @@ const Leads = ({ onNavigate }) => {
       <div className="leads-main">
         <div className="filter-bar"><div className="search-wrap"><FaSearch className="search-ico" /><input className="filter-search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search complete lead data..." /></div><select className="filter-select" value={statusF} onChange={e => setStatusF(e.target.value)}>{STATUSES.map(status => <option key={status}>{status}</option>)}</select><button className="btn-reset" onClick={() => { setSearch(''); setStatusF('All Status'); }}>Reset</button></div>
         <div className="table-toolbar"><div className="total-count">Showing <strong>{filtered.length.toLocaleString()}</strong> of <strong>{leads.length.toLocaleString()}</strong> leads</div><div className="toolbar-right"><span className="table-note">Excel columns match Superadmin</span></div></div>
-        <div className="table-wrap">{loading ? <div className="lead-loading">Loading leads…</div> : <table className="leads-table" style={{ minWidth: Math.max(900, (columns.length + 2) * 150) }}><thead><tr><th className="select-col"><input type="checkbox" aria-label="Select visible leads" checked={paginated.length > 0 && paginated.every(lead => selected.includes(lead.id || lead.leadId))} onChange={toggleAll} /></th>{columns.map(column => <th key={column}>{column}</th>)}<th className="actions-col">Actions</th></tr></thead><tbody>{paginated.length === 0 ? <tr><td colSpan={columns.length + 2} className="empty-row">No leads found.</td></tr> : paginated.map(lead => { const record = getLeadRecord(lead); const id = lead.id || lead.leadId; return <tr key={id}><td className="select-col"><input type="checkbox" aria-label={`Select lead ${id}`} checked={selected.includes(id)} onChange={() => toggleSelect(id)} /></td>{columns.map(column => { const cell = getCellValue(record, column); return <td className="dyn-cell" key={column} title={fmt(cell)}>{fmt(cell)}</td>; })}<td><div className="action-group"><button className="act-btn" title="View complete lead" onClick={() => setViewLead(lead)}><FaEye /></button><button className="act-btn" title="Call" onClick={() => handleCall(lead)}><FaPhone /></button></div></td></tr>; })}</tbody></table>}</div>
+        <div className="table-wrap">{loading ? <div className="lead-loading">Loading leads…</div> : <table className="leads-table" style={{ minWidth: Math.max(900, (columns.length + 2) * 150) }}><thead><tr><th className="select-col"><input type="checkbox" aria-label="Select visible leads" checked={paginated.length > 0 && paginated.every(lead => selected.includes(lead.id || lead.leadId))} onChange={toggleAll} /></th>{columns.map(column => <th key={column}>{column}</th>)}<th className="actions-col">Actions</th></tr></thead><tbody>{paginated.length === 0 ? <tr><td colSpan={columns.length + 2} className="empty-row">No leads found.</td></tr> : paginated.map(lead => { const record = getLeadRecord(lead); const id = lead.id || lead.leadId; return <tr key={id}><td className="select-col"><input type="checkbox" aria-label={`Select lead ${id}`} checked={selected.includes(id)} onChange={() => toggleSelect(id)} /></td>{columns.map(column => { const cell = getCellValue(record, column); return <td className="dyn-cell" key={column} title={fmt(cell)} style={{ whiteSpace: 'normal', overflow: 'visible', textOverflow: 'clip', wordBreak: 'break-word', overflowWrap: 'anywhere', minWidth: 160, maxWidth: 360, verticalAlign: 'top', lineHeight: 1.5 }}>{fmt(cell)}</td>; })}<td><div className="action-group"><button className="act-btn" title="View complete lead" onClick={() => setViewLead(lead)}><FaEye /></button><button className="act-btn" title="Call" onClick={() => handleCall(lead)}><FaPhone /></button></div></td></tr>; })}</tbody></table>}</div>
         {!loading && <div className="pagination-bar"><div className="rows-select">Rows per page: <select value={rowsPerPage} onChange={e => setRowsPerPage(Number(e.target.value))}><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></div><div className="pagination-controls"><button className="page-btn" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>‹</button><span>Page {page} of {totalPages}</span><button className="page-btn" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>›</button></div></div>}
       </div>
       {!loading && filtered.length > 0 && <div className="lead-data-note">Showing every Excel column uploaded by the Super Admin for this district; use View for the complete record or Call to start a call.</div>}
@@ -275,4 +276,3 @@ const Leads = ({ onNavigate }) => {
 };
 
 export default Leads;
-

@@ -99,13 +99,13 @@ const StatusPill = ({ status }) => {
 }; 
  
 // ─── Join / Meeting Button ──────────────────────────────────────────────────── 
-const MeetBtn = ({ demo }) => { 
+const MeetBtn = ({ demo, onCall }) => { 
   if (demo.status === 'Cancelled') return null; 
   if (demo.meetType === 'phone') { 
     return ( 
-      <a href={`tel:${demo.phone}`} className="dm-join-btn"> 
-        <FiPhone size={12}/> Call 
-      </a> 
+      <button type="button" className="dm-join-btn" style={{ cursor: 'pointer', border: 'none' }} onClick={() => onCall && onCall(demo)}>
+        <FiPhone size={12}/> Call
+      </button>
     ); 
   } 
   if (demo.meetType === 'office') { 
@@ -511,7 +511,7 @@ const DemoViewModal = ({ demo, onClose, onEdit }) => {
 }; 
  
 // ─── Main Demo Page ─────────────────────────────────────────────────────────── 
-const Demo = () => { 
+const Demo = ({ onNavigate }) => { 
   const [demos, setDemos]         = useState([]); 
   const [leads, setLeads]         = useState([]); 
   const [loading, setLoading]     = useState(true); 
@@ -711,7 +711,19 @@ const Demo = () => {
     showToast('Meet link copied!', 'info'); 
   }; 
  
-  const handleCall = (demo) => { const { phone } = getContactOverride(demo); if (!phone) { showToast('No phone number available for this lead.', 'error'); return; } window.open(`tel:${String(phone).replace(/[^0-9+]/g, '')}`, '_self'); }; 
+  // Call button -> open the Call Panel for THIS lead and dial THIS demo's number from the
+  // paired phone (no more tel: link that opens the PC's dialer).
+  const handleCall = (demo) => {
+    const { phone } = getContactOverride(demo);
+    const number = String(phone || '').replace(/[^0-9+]/g, '');
+    if (!number) { showToast('No phone number available for this lead.', 'error'); return; }
+    if (!onNavigate) { window.open(`tel:${number}`, '_self'); return; }   // safety fallback
+    const lead = leads.find(l => String(l.leadId) === String(demo.leadId))
+      || { leadId: demo.leadId, name: demo.organization, contactPerson: demo.contactPerson, mobile: number };
+    onNavigate('callpanel', {
+      state: { lead, leadId: demo.leadId, phone: number, name: demo.organization, action: 'callNumber' },
+    });
+  }; 
  
 
   const handleExport = () => {
@@ -918,7 +930,7 @@ const Demo = () => {
                   </td> 
                  
                   <td> 
-                    <MeetBtn demo={demo} /> 
+                    <MeetBtn demo={demo} onCall={handleCall} /> 
                   </td> 
                   <td> 
                     <StatusPill status={demo.status} /> 
@@ -1027,4 +1039,4 @@ const Demo = () => {
   ); 
 }; 
  
-export default Demo; 
+export default Demo;

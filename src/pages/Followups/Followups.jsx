@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { api } from '../../services/api';
 import { leadService } from '../../services/leadService';
 import './Followups.css';
@@ -229,7 +229,7 @@ const Modal = ({ show, title, onClose, children, wide }) => {
 };
 
 // ─── Follow-Up Form ─────────────────────────────────────────────────────────────
-const FollowUpForm = ({ initial, onSave, onClose }) => {
+const FollowUpForm = ({ initial, onSave, onClose, leads = [] }) => {
   const [form, setForm] = useState(initial || {
     organization: '', contactPerson: '', mobile: '', email: '', campaign: 'School ERP',
     type: 'Call Back', date: '', time: '', note: '',
@@ -237,26 +237,78 @@ const FollowUpForm = ({ initial, onSave, onClose }) => {
   });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
+  // ADD mode only: pick an existing lead (a follow-up is stored on a lead)
+  const isAdd = !initial;
+  const [leadSearch, setLeadSearch] = useState('');
+  const keyOf = l => String(firstValue(l?.leadId, l?.businessLeadId, l?.id, l?._id, '') || '');
+  const nameOf = l => String(firstValue(l?.organization, l?.schoolName, l?.school, l?.name, 'Unknown') || 'Unknown');
+  const mobileOf = l => String(firstValue(l?.mobile, l?.phoneNumber, l?.phone, '') || '');
+  const matches = useMemo(() => {
+    const q = leadSearch.trim().toLowerCase();
+    const list = q
+      ? leads.filter(l => `${nameOf(l)} ${mobileOf(l)} ${firstValue(l?.contactPerson, '') || ''}`.toLowerCase().includes(q))
+      : leads;
+    return list.slice(0, 50);
+  }, [leads, leadSearch]);
+  const pickLead = key => {
+    const lead = leads.find(l => keyOf(l) === key);
+    if (!lead) { setForm(f => ({ ...f, leadKey: '' })); return; }
+    setForm(f => ({
+      ...f,
+      leadKey: key,
+      organization: nameOf(lead),
+      contactPerson: String(firstValue(lead.contactPerson, lead.contactName, '') || ''),
+      mobile: mobileOf(lead),
+      email: String(firstValue(lead.email, '') || ''),
+    }));
+  };
+  const locked = isAdd && !!form.leadKey;
+
   return (
     <div className="fu-lead-form">
+      {isAdd && (
+        <div className="fu-form-group" style={{ marginBottom: 12 }}>
+          <label>Select Lead *</label>
+          <input
+            type="text"
+            value={leadSearch}
+            onChange={e => setLeadSearch(e.target.value)}
+            placeholder="Search by organization, contact or mobile…"
+          />
+          <select
+            size={5}
+            value={form.leadKey || ''}
+            onChange={e => pickLead(e.target.value)}
+            style={{ width: '100%', marginTop: 6 }}
+          >
+            {matches.length === 0 && <option value="" disabled>No leads found</option>}
+            {matches.map(l => (
+              <option key={keyOf(l)} value={keyOf(l)}>
+                {nameOf(l)} — {mobileOf(l) || 'no number'}
+              </option>
+            ))}
+          </select>
+          {!form.leadKey && <small style={{ color: '#b45309' }}>Select the lead this follow-up is for.</small>}
+        </div>
+      )}
       <div className="fu-form-row">
         <div className="fu-form-group">
           <label>Organization Name</label>
-          <input type="text" value={form.organization} onChange={e => set('organization', e.target.value)} placeholder="Organization Name" />
+          <input type="text" value={form.organization} readOnly={locked} onChange={e => set('organization', e.target.value)} placeholder="Organization Name" />
         </div>
         <div className="fu-form-group">
           <label>Contact Person</label>
-          <input type="text" value={form.contactPerson} onChange={e => set('contactPerson', e.target.value)} placeholder="Contact Person" />
+          <input type="text" value={form.contactPerson} readOnly={locked} onChange={e => set('contactPerson', e.target.value)} placeholder="Contact Person" />
         </div>
       </div>
       <div className="fu-form-row">
         <div className="fu-form-group">
           <label>Mobile</label>
-          <input type="tel" value={form.mobile} onChange={e => set('mobile', e.target.value)} placeholder="+91 XXXXX XXXXX" />
+          <input type="tel" value={form.mobile} readOnly={locked} onChange={e => set('mobile', e.target.value)} placeholder="+91 XXXXX XXXXX" />
         </div>
         <div className="fu-form-group">
           <label>Email</label>
-          <input type="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="email@example.com" />
+          <input type="email" value={form.email} readOnly={locked} onChange={e => set('email', e.target.value)} placeholder="email@example.com" />
         </div>
       </div>
       <div className="fu-form-row">
@@ -472,6 +524,7 @@ const FollowUps = ({ onNavigate }) => {
   const [viewFu, setViewFu]           = useState(null);
   const [toast, setToast]             = useState(null);
   const [activeTab, setActiveTab]     = useState('All');
+  const allLeadsRef = useRef([]);   // every lead of this telecaller (used to attach a NEW follow-up to a lead)
 
   const showToast = msg => {
     setToast(msg);
@@ -500,6 +553,7 @@ const FollowUps = ({ onNavigate }) => {
         })
       );
       const leads = leadResponses.flatMap(unwrapRows);
+      allLeadsRef.current = leads;
 
       // Existing backend mapping: GET /api/calls/agent
       const callResponse = await api.calls.getMyCalls();
@@ -603,17 +657,57 @@ const FollowUps = ({ onNavigate }) => {
   const toggleRow     = id => setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
 
   // ─── CRUD ────────────────────────────────────────────────────────────────────
+  // The backend has NO /api/followups endpoint (that is why "Unable to schedule: No message
+  // available" appeared). A follow-up is stored ON THE LEAD (tcNextRefollowupDate + note), so a new
+  // follow-up = find the lead (by mobile, else organization name) and save the date on it.
+  const digitsOnly = v => String(v || '').replace(/\D/g, '');
+  const findLeadForForm = form => {
+    const leads = allLeadsRef.current || [];
+    const wantMobile = digitsOnly(form.mobile).slice(-10);
+    const wantOrg = String(form.organization || '').trim().toLowerCase();
+    const mobilesOf = lead => [lead?.mobile, lead?.mobile2, lead?.mobile3, lead?.phoneNumber, lead?.phone]
+      .map(v => digitsOnly(v).slice(-10)).filter(Boolean);
+    const orgOf = lead => String(firstValue(lead?.organization, lead?.schoolName, lead?.school, lead?.name, '') || '').trim().toLowerCase();
+
+    if (wantMobile.length >= 10) {
+      const byMobile = leads.find(l => mobilesOf(l).includes(wantMobile));
+      if (byMobile) return byMobile;
+    }
+    if (wantOrg) {
+      const exact = leads.filter(l => orgOf(l) === wantOrg);
+      if (exact.length === 1) return exact[0];
+      if (exact.length > 1 && wantMobile) return exact.find(l => mobilesOf(l).includes(wantMobile)) || null;
+    }
+    return null;
+  };
+
   const handleAdd = async form => {
+    if (!form.date) { showToast('Please select the follow-up date.'); return; }
+    if (!form.time) { showToast('Please select the follow-up time.'); return; }
+    if (!String(form.note || '').trim()) { showToast('Please enter a follow-up note.'); return; }
+    const when = new Date(`${form.date}T${form.time}`);
+    if (Number.isNaN(when.getTime())) { showToast('Please enter a valid date and time.'); return; }
+    if (form.status === 'Pending' && when.getTime() <= Date.now() - 60 * 1000) {
+      showToast('Follow-up date and time must be in the future.');
+      return;
+    }
+
+    const keyOfLead = l => String(firstValue(l?.leadId, l?.businessLeadId, l?.id, l?._id, '') || '');
+    const lead = (form.leadKey && (allLeadsRef.current || []).find(l => keyOfLead(l) === form.leadKey))
+      || findLeadForForm(form);
+    const businessLeadId = lead ? String(firstValue(lead.leadId, lead.businessLeadId, lead.id, lead._id, '') || '') : '';
+    if (!lead || !businessLeadId) {
+      showToast('Please select a lead from the list.');
+      return;
+    }
+
     setSaving(true);
     try {
-      const payload = { ...form, status: form.status || 'Pending' };
-      const response = await api.followups.create(payload);
-      const created = response?.data || response;
-      if (!created || !(created.id || created._id)) {
-        await loadFollowUps();
-      } else {
-        setFollowUps(prev => [{ ...payload, ...created, id: String(created.id ?? created._id) }, ...prev]);
-      }
+      await saveFollowUpToLead(
+        { leadId: businessLeadId, rawLead: lead },
+        { date: form.date, time: form.time, note: String(form.note).trim(), status: form.status || 'Pending' }
+      );
+      await loadFollowUps();
       setShowAdd(false);
       showToast('Follow-up scheduled successfully.');
     } catch (error) { showToast(`Unable to schedule: ${error.message}`); }
@@ -749,7 +843,7 @@ const FollowUps = ({ onNavigate }) => {
 
       {/* ─── Modals ─── */}
       <Modal show={showAdd} title="Schedule New Follow-Up" onClose={() => setShowAdd(false)}>
-        <FollowUpForm onSave={handleAdd} onClose={() => setShowAdd(false)} />
+        <FollowUpForm leads={allLeadsRef.current} onSave={handleAdd} onClose={() => setShowAdd(false)} />
       </Modal>
 
       <Modal show={!!editFu} title="Edit Follow-Up" onClose={() => setEditFu(null)}>

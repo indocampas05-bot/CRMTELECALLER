@@ -65,7 +65,7 @@ const AppContent = () => {
       'settings-about': <Settings onNavigate={handleNavigate} activeTab="about" />,
       users: <Users />,
       help: <Help />,
-      demo: <Demo />,
+      demo: <Demo onNavigate={handleNavigate} />,
       payment: <Payment />,
       categories: <Categories />,
     };
